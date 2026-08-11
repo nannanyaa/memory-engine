@@ -1,5 +1,7 @@
 # memory-engine（Agent Skill 手册）
 
+[![CI](https://github.com/nannanyaa/memory-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/nannanyaa/memory-engine/actions)
+
 > **给谁看**：任何想接入、配置或改造本插件的 agent / 维护者。读完后你应该知道——它**是什么、往你上下文里注入什么、怎么开、每一格配置是什么意思、从哪改代码**。
 >
 > 一句话定位：一个挂在 [OpenClaw](https://github.com/) 上的**通用记忆决策引擎插件**，纯 hook、后台自动干活，把"记住什么、何时想起来、何时压缩"这类记忆决策替你做了，且**绝不阻塞你的消息路径**。

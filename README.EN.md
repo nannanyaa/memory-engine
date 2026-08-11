@@ -1,5 +1,7 @@
 # memory-engine — A Generic Memory Decision Engine Plugin for OpenClaw
 
+[![CI](https://github.com/nannanyaa/memory-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/nannanyaa/memory-engine/actions)
+
 > **Who is this for**: any agent / maintainer who wants to integrate, configure, or extend this plugin. After reading you should know — **what it is, what it injects into your context, how to enable it, what every config field means, and where to change the code**.
 >
 > **One-liner**: a **generic memory decision engine plugin** for [OpenClaw](https://github.com/), pure-hook, works in the background. It automates the memory decisions — *what to remember, when to recall, when to compact* — and **never blocks your message path**.
