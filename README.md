@@ -189,7 +189,7 @@ npm run typecheck    # tsc --noEmit（需要本地装 openclaw SDK 类型）
 
 ### 5.8 上下文压缩（`compaction`）—— 算法决策核心区
 
-> **💡 基准前提**：本节的推荐值（`contextTokenBudget: 920000`、`lengthThreshold: 0.20`、`summarizeRatioThreshold: 0.30`、`summarizeTargetRatio: 0.15` 等）是为**大上下文窗口（如 1M）模型**标定的。若你用**小窗口模型**（如 128k / 64k），请**按比例调整 `contextTokenBudget`**（如 128k 窗口建议配 `~115200`，即 128k×0.9），并据实际触发行为微调各阈值——直接套用 1M 的推荐值会导致小窗口下触发过晚/比例失真。
+> **💡 基准前提**：本节的推荐值（`contextTokenBudget: 920000`、`lengthThreshold: 0.20`、`summarizeRatioThreshold: 0.30`、`summarizeTargetRatio: 0.15` 等）是为**大上下文窗口（如 1M）模型**标定的。若你用**小窗口模型**（如 128k / 64k），请**按比例缩放 `contextTokenBudget`**（如 128k 窗口建议配 `~115200`，即 128k×0.9）。⚠️ 直接套用 1M 的推荐值，固定开销（工具 schema `contextToolOverheadTokens: 45000`、系统提示基底）在小窗口下占比大幅膨胀，会撑高判定值——导致小窗口模型**过早触发**压缩。请缩放后据实际触发行为微调各阈值。
 
 | 字段 | 类型 | 默认 | 含义 / 决策理由 |
 | --- | --- | --- | --- |

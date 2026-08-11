@@ -189,7 +189,7 @@ See the quick-reference in §3. Switches combine freely; coupling constraints ar
 
 ### 5.8 Context compaction (`compaction`) — the algorithm decision core
 
-> **💡 Baseline assumption**: the recommended values in this section (`contextTokenBudget: 920000`, `lengthThreshold: 0.20`, `summarizeRatioThreshold: 0.30`, `summarizeTargetRatio: 0.15`, etc.) are calibrated for **large-context-window (e.g. 1M) models**. If you use a **smaller-window model** (e.g. 128k / 64k), **scale `contextTokenBudget` accordingly** (e.g. for a 128k window consider `~115200`, i.e. 128k×0.9) and then fine-tune the thresholds based on real trigger behavior — reusing the 1M recommended values directly can cause triggers to fire too late / ratios to be off under a small window.
+> **💡 Baseline assumption**: the recommended values in this section (`contextTokenBudget: 920000`, `lengthThreshold: 0.20`, `summarizeRatioThreshold: 0.30`, `summarizeTargetRatio: 0.15`, etc.) are calibrated for **large-context-window (e.g. 1M) models**. If you use a **smaller-window model** (e.g. 128k / 64k), **scale `contextTokenBudget` accordingly** (e.g. for a 128k window consider `~115200`, i.e. 128k×0.9). ⚠️ Reusing the 1M recommended values directly makes fixed overheads (tool-schema `contextToolOverheadTokens: 45000`, system-prompt base) occupy a far larger share of a small window, inflating the judge value — causing **premature (too early) triggers** under smaller-window models. After scaling, fine-tune the thresholds based on real trigger behavior.
 
 | Field | Type | Default | Meaning / rationale |
 | --- | --- | --- | --- |
