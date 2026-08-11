@@ -8,7 +8,7 @@
  * 接管方式：registerContextEngine(id, factory)，然后由配置 plugins.slots.contextEngine = 本引擎 id 生效。
  * —— 硬性约束：不改 slots.contextEngine 实际值（当前仍为 lossless-claw），
  *    因此本模块注册即使开启 enable_context_compaction 也不会接管（safe, deferred）。
- *    真正接管由负责人确认后单独改配置 + 重启。
+ *    真正接管由南南确认后单独改配置 + 重启。
  *
  * 设计：与 A 路（compaction.ts）共享向量窗口/事件检测/归档能力。
  *   - ingest: 把消息投入后台窗口（不阻塞）。
@@ -36,6 +36,7 @@ import { getRuntime } from "../runtime.js";
 import { distillText } from "../llm.js";
 import { appendToFile } from "../writers.js";
 import { toISODate } from "../time.js";
+import { extractMessageText, estimateSerializedMessagesTokens } from "./context-tokens.js";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync, renameSync, statSync, existsSync, readdirSync } from "node:fs";
@@ -171,6 +172,7 @@ function createContextEngine(
       }
       rt.log.info(
         `[context-engine] maintain: ratio=${ratio.toFixed(3)}>=length=${rt.cfg.compaction.lengthThreshold}${isEmergency ? ` [EMERGENCY>=${rt.cfg.compaction.emergencySyncThreshold}]` : ""} tokenCount=${tokenCount} budget=${budget} session=${params.sessionId}`,
+      );
 
       // ---- Session Rotation（学习 lossless rewriteTranscriptForRotate）----
       // 目标：让 transcript 文件真正瘦身（保留 header + prelude + 尾部 keepTail 条消息），
@@ -420,14 +422,11 @@ export function reduceAndRewrite(input: ReduceAndRewriteInput): ReduceAndRewrite
   // 计算要用多少条尾部消息才能把 ratio 压回目标以下（方案 A：压落点 0.12，配置化）
   const targetRatio = Math.max(0.05, adjustTargetRatio(rt.cfg.compaction.lengthThreshold, rt.cfg.compaction.summarizeTargetRatio));
   const msgTokenList = msgs.map((e) => {
-    const m = e.message as { role?: string; content?: unknown };
-    const txt =
-      typeof m.content === "string"
-        ? m.content
-        : Array.isArray(m.content)
-          ? m.content.map((p) => (typeof p === "string" ? p : (p as { text?: string })?.text || "")).join("\n")
-          : "";
-    return { id: e.id as string, txt, len: txt.length };
+    const m = e.message ?? {};
+    // 【keepTail 口径根治 · 2026-08-11】旧实现只对 content 文本用字符估算(tokenEstimateOfText)，
+    // 与 tokenCount(序列化估算 275k)口径不一致 → 算出的 msgTokensTotal 极小 → 循环几乎不删(drop=4) → 压不下来。
+    // 现在保留整条 message，单条用序列化估算(estimateSerializedMessagesTokens，与 tokenCount 同源)，drop 才能正确算出。
+    return { id: e.id as string, message: m, txt: extractMessageText(m) };
   });
   // 修复 keepTail 口径 bug（方案问题1，已审核保留）
   // 起点统一为「纯消息 token」：tokenCount 含不可删的 overhead（系统提示+工具），
@@ -438,7 +437,7 @@ export function reduceAndRewrite(input: ReduceAndRewriteInput): ReduceAndRewrite
   const budgetNum = budget > 0 ? budget : 900000;
   const targetTokens = Math.floor(budgetNum * targetRatio);
   const msgTokensTotal = msgTokenList.reduce(
-    (s, x) => s + Math.max(1, tokenEstimateOfText(x.txt)),
+    (s, x) => s + Math.max(1, estimateSerializedMessagesTokens([x.message])),
     0,
   );
   const overheadTokens = Math.max(0, tokenCount - msgTokensTotal); // 系统提示+工具（不可删）
@@ -446,7 +445,7 @@ export function reduceAndRewrite(input: ReduceAndRewriteInput): ReduceAndRewrite
   let keepTail = msgs.length; // 默认全留（不削减）
   let keepTokens = msgTokensTotal;
   for (let i = msgTokenList.length - 1; i >= 0; i--) {
-    const t = Math.max(1, tokenEstimateOfText(msgTokenList[i].txt));
+    const t = Math.max(1, estimateSerializedMessagesTokens([msgTokenList[i].message]));
     if (keepTokens - t <= targetMsgTokens) break; // 剩余消息 <= 可删目标，停
     keepTokens -= t;
     keepTail = i;
@@ -592,7 +591,7 @@ export interface ManualCompactResult {
 }
 
 /**
- * 从 sessionKey（形如 agent:<agent>:<session> / agent:main:main）解析 agentId，并定位该 agent 的
+ * 从 sessionKey（形如 agent:agentC:xxx / agent:main:main）解析 agentId，并定位该 agent 的
  * sessions 目录下“最近活跃”的 transcript 文件（非 trajectory/非 deleted 的 .jsonl，取 mtime 最新）。
  * main 会话的 session label 并不等于文件 UUID，因此用“最新写入的会话文件”作为手动压缩目标——
  * mem_compact 由 agent 在自身会话中触发，最新会话即当前活跃会话。
@@ -777,11 +776,9 @@ function tokenEstimateOfText(text: string): number {
 /** 估算消息数组 token（逐条按内容类型加权）。 */
 function estimateMessages(messages: unknown[]): number {
   if (!Array.isArray(messages)) return 0;
-  let tokens = 0;
-  for (const m of messages) {
-    tokens += tokenEstimateOfText(messageText(m));
-  }
-  return Math.max(1, tokens);
+  // 【口径根治 · 2026-08-11】统一用序列化估算（与 estimateMessagesTokens/keepTail/kgcompress 同源），
+  // 替代旧纯文本字符估算(tokenEstimateOfText)——后者对工具密集消息低估，兜底压缩/assemble 判定会脱节。
+  return Math.max(1, estimateSerializedMessagesTokens(messages));
 }
 
 // ---------------------------------------------------------------------------
@@ -937,8 +934,8 @@ function summarizeOldMessages<M>(
     const m = messages[i];
     const txt = messageText(m);
     if (!txt.trim()) continue;
-    // 落入折叠段：其 token 从总额中扣除（后面统一按摘要计数）
-    keepTokens -= Math.max(1, tokenEstimateOfText(txt));
+    // 落入折叠段：其 token 从总额中扣除（统一序列化口径，与 estimateMessages 同源）
+    keepTokens -= Math.max(1, estimateSerializedMessagesTokens([m]));
     foldList.push(m);
     foldedText = foldedText ? foldedText + "\n" + txt : txt;
     // 折叠段至少 minOld 条才动手（尊重原约束，避免只折 1-2 条碎片）
@@ -1027,7 +1024,7 @@ async function distillInBackground(
 
 /**
  * 方案 A：压缩落点目标占比（锯齿形：超 lengthThreshold 触发 → 压回到 target）。
- * 设计定：触发线 0.25、落点 0.12（整体在 15%~20% 波动）。
+ * 南南拍板：触发线 0.25、落点 0.12（整体在 15%~20% 波动）。
  * target 取配置 summarizeTargetRatio（默认 0.12），缺失回退×0.85 可回滚。
  * 落点必须严格 < 触发线，`threshold - 0.01` 保险防止配置误设≥触发线导致死循环压缩。
  * 返回 [0.05, min(target, threshold-0.01)]。

@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.0-beta.2] - 2026-08-11
+
+### ✨ 新增
+
+- **记忆晋升·提案模式**：`memory_promotion` 不再把高投入主题直接写进 `MEMORY.md`/`USER.md`，而是先写成独立晋升提案文件（`<proposalDir>/promotion/pending-*.md`，含目标/来源/价值reason/蒸馏框架），待夜间 `nightlyReview`（selfevolve cron）定时筛选——`applyPendingPromotions` 对每条经价值判定+自审复核后真正 Apply（归档已处理的到 `applied/`）。彻底避免琐碎/乱七八糟的候选直接污染长期记忆。
+
+### 🐛 修复
+
+- **压缩估算口径根治（“触发但不生效”复发）**：
+  - `event.messages` 现用**完整消息序列化估算**（`estimateSerializedMessagesTokens`，含工具调用/结构化 payload），替代旧纯文本抽取——后者对工具密集会话低估 2-3x（Web 240k vs 插件 101k）。
+  - `before_prompt_build` 的 `event.prompt` 常为“近空”(len 3~258) 却优先用它估算 → 把 usedTokens 钉死在 baseTokens。改为 prompt 长度 <200 时改用 `event.messages` 序列化估算（296k 接近真实）。
+  - `estimateMessagesTokens` 不再被 OpenClaw `officialEstimate`（低估到 baseTokens）顶掉；仅当其与序列化同量级(≥0.5x)才取平均，否则以序列化为准。
+  - `reduceAndRewrite` 的 keepTail 与兜底 `estimateMessages`/summarize 折叠计数统一改用序列化估算——修复 `drop=4`（几乎不压）复发，现在 collapsed 200-413 条、token 真压回目标 12%。
+
+### ⚠️ 已知 / 注意
+
+- 晋升提案目录 `proposalDir`（默认 `<workspaceDir>/.rules/memory-engine-proposals`），首次触发高投入提案或夜间筛选时自动创建。
+
+---
+
 ## [0.2.0-beta.1] - 2026-08-11
 
 ### ✨ 新增

@@ -1,5 +1,5 @@
 /**
- * context-tokens.ts — 真实上下文 token 用量捕获（脱离 lcm.db 的主判据，2026-08-09 深挖根因）
+ * context-tokens.ts — 真实上下文 token 用量捕获（脱离 lcm.db 的主判据，2026-08-09 绫潇深挖根因）
  *
  * 根因（决定性）：maybeCompressByRealLength 旧的 usedTokens 主来源是 rt.lcm.getActiveConversation()
  *   （读 lossless 的只读库 lcm.db）。"完整卸载 lossless"后 lcm.db 被删 → rt.lcm=null → usedTokens=0
@@ -116,26 +116,52 @@ export function estimateBytesToTokens(text: string): number {
 }
 
 /**
+ * 【借鉴 lossless · 估算根治】整条消息完整序列化估算。
+ * 旧 extractMessageText 只抽 content/text 字符串，漏掉工具调用/结构化 JSON payload，
+ * 对工具密集会话低估 2-3x（Web 240k vs 插件 101k 差一倍）。
+ * 现在对整条消息做 JSON.stringify（含 toolCall/结构化字段）再按字节估算，model boundary 实际看到的就是它。
+ * 非序列化(循环/纯对象)时回退到 content 文本。
+ */
+export function estimateSerializedMessagesTokens(messages: unknown[]): number {
+  if (!Array.isArray(messages) || !messages.length) return 0;
+  let total = 0;
+  for (const message of messages) {
+    let serialized = "";
+    try {
+      serialized = JSON.stringify(message) ?? "";
+    } catch {
+      const content = (message as { content?: unknown } | null)?.content;
+      serialized = typeof content === "string" ? content : "";
+    }
+    total += estimateBytesToTokens(serialized);
+  }
+  return total;
+}
+
+/**
  * token 估算：优先 openclaw 官方 estimateContextTokens（provider usage 就绪时真实 token），
  * 否则退化到字节级启发式。只算会话消息部分；系统提示/工具基底由调用方叠加。
  */
 export async function estimateMessagesTokens(messages: unknown[]): Promise<number> {
   if (!Array.isArray(messages) || !messages.length) return 0;
-  let base = 0;
+  // 【估算根治 · 2026-08-11】以完整消息序列化估算为准（实测 638条≈298k，接近 Web 263k/29%）。
+  // OpenClaw SDK officialEstimate 对 event.messages 常返回 baseTokens 量级(低估 2-3x)，会顶掉准确值 → 弃用 official，或仅当其与序列化同量级时才用。
+  const serializedEst = estimateSerializedMessagesTokens(messages);
+  let officialEst = 0;
   try {
     await resolveOfficialEstimate();
     if (officialEstimate) {
-      const est = officialEstimate(messages as never[]);
-      const t = est?.tokens;
-      if (typeof t === "number" && t > 0) base = t;
+      const t = officialEstimate(messages as never[])?.tokens;
+      if (typeof t === "number" && t > 0) officialEst = t;
     }
   } catch {
-    base = 0;
+    officialEst = 0;
   }
-  if (base <= 0) {
-    base = estimateBytesToTokens(messages.map((m) => extractMessageText(m)).join("\n"));
+  // official 若与序列化同量级(≥0.5x)则取平均(互为校验)；若远偏小(低估)则用序列化。
+  if (officialEst > 0 && serializedEst > 0 && officialEst >= serializedEst * 0.5) {
+    return Math.max(0, Math.round((officialEst + serializedEst) / 2));
   }
-  return Math.max(0, base);
+  return Math.max(0, serializedEst);
 }
 
 /**
@@ -243,12 +269,7 @@ export async function snapshotFromTurnPrepare(
   event: PluginAgentTurnPrepareEvent,
   base: ContextBaseOverhead,
 ): Promise<ContextUsageSnapshot> {
-  // 【快照稳定性修复·Web横跳根因】event.prompt 为空时，不能落 0/低值否则 assemble fallback 估算偏大触发反复折叠(Web 20↔49横跳)。
-  // 用 event.messages 估算；即便 messages 也空，也至少保留 baseTokens(系统+工具) 作为有效快照，绝不写 0。
-  const snap = await makeContextUsageSnapshot(ctx, event.messages, base);
-  const baseTokens = (base.systemPromptTokens || 0) + (base.toolOverheadTokens || 0);
-  if (snap.usedTokens <= 0) snap.usedTokens = baseTokens;
-  return snap;
+  return makeContextUsageSnapshot(ctx, event.messages, base);
 }
 
 /** before_prompt_build 事件适配。 */
@@ -262,7 +283,9 @@ export async function snapshotFromBeforePromptBuild(
   // 旧实现用 event.messages，在 agent_end 常为空 → usedTokens≈0 → 永远达不到 30% 触发线。
   // event.prompt = 系统提示 + 工具 + 全部会话消息 的完整 prompt（≈ Web 面板 pct_used 的实际内容），
   // 用它估算 token 更接近真实占比，从而让压缩在超阈值时正确触发。
-  const prompt = typeof event.prompt === "string" && event.prompt.length > 0 ? event.prompt : undefined;
+  // 【估算根治 · 2026-08-11】实测 OpenClaw 传给 here 的 event.prompt 常为“近空”(len=3~258)，而 event.messages(632条)
+  // 序列化估算≈296k(33%)接近真实。故 prompt 过短(<200)时改用 event.messages 序列化估算，避免用空 prompt 的极小值把 ctxUsed 钉死在 baseTokens。
+  const prompt = typeof event.prompt === "string" && event.prompt.length >= 200 ? event.prompt : undefined;
   if (prompt) {
     const budget =
       typeof ctx.contextTokenBudget === "number" && ctx.contextTokenBudget > 0
@@ -285,7 +308,25 @@ export async function snapshotFromBeforePromptBuild(
       ts: Date.now(),
     };
   }
-  return makeContextUsageSnapshot(ctx, event.messages, base);
+  // 【快照稳定性修复·Web横跳根因】event.prompt 为空时，不能落 0/低值否则 assemble fallback 估算偏大触发反复折叠(Web 20↔49横跳)。
+  // 用 event.messages 估算；即便 messages 也空，也至少保留 baseTokens(系统+工具) 作为有效快照，绝不写 0。
+  const snap = await makeContextUsageSnapshot(ctx, event.messages, base);
+  const baseTokens = (base.systemPromptTokens || 0) + (base.toolOverheadTokens || 0);
+  // 【压缩口径诊断·消息估算探针】打印 messages 样本内容 + estimateTokens 结果，对比 OpenClaw 真实 240k
+  try {
+    const msgs = Array.isArray(event.messages) ? event.messages : [];
+    const sample = msgs.slice(0, 3).map((m: any) => {
+      if (m && typeof m === "object") {
+        const txt = typeof m.text === "string" ? m.text : (typeof m.content === "string" ? m.content : "");
+        return (m.type ?? m.role ?? "?") + ":" + (txt ? txt.slice(0, 80) : "(no-text)");
+      }
+      return String(m ?? "?").slice(0, 80);
+    }).join(" | ");
+    const estTokens = await estimateMessagesTokens(msgs);
+    console.error(`[mem-debug][messages-snap] msgsCount=${msgs.length} estTokens=${estTokens} baseTokens=${baseTokens} snapUsed=${snap.usedTokens} | sample: ${sample}`);
+  } catch (e) { /* ignore probe error */ }
+  if (snap.usedTokens <= 0) snap.usedTokens = baseTokens;
+  return snap;
 }
 
 /** agent_end 事件适配（无 messages 或为空时退化为上一份/0）。 */

@@ -1,7 +1,7 @@
 /**
  * selfevolve.ts — 自进化引擎（模块：enable_self_evolve）
  *
- * 半自动自进化 —— 自主进化 + 日志汇报改动点 + 可手动回退，不走前置审批。
+ * 南南拍板 #1：半自动自进化 —— 自主进化 + 日志汇报改动点 + 可手动回退，不走前置审批。
  *
  * 引擎职责（红线：只产出提案/日志/回退，绝不自动改 AGENTS/SOUL/MEMORY 机制文件）：
  *   1. 每日深夜 cron -> 复盘近期记忆体系健康度
@@ -18,13 +18,24 @@ import { readdirSync, readChanges } from "../log.js";
 import type { RuntimeContext } from "../runtime.js";
 import { toISODate } from "../time.js";
 import { chatGeneric } from "../llm.js";
+import { applyPendingPromotions } from "./memory.js";
 
 export const PROPOSALS_DIR = "memory-engine-proposals";
 
-/** 夜间复盘：产提案（不自动应用）。 */
+/** 夜间复盘：产提案（不自动应用）。+ 先筛选晋升 memory 的 pending 提案。 */
 export async function nightlyReview(rt: RuntimeContext): Promise<{ proposalPath: string; changed: string[] } | null> {
   if (!rt.cfg.enable_self_evolve) return null;
   const cfg = rt.cfg.selfEvolve;
+
+  // 【记忆晋升·提案模式】夜间先筛选晋升 memory 挂起的晋升提案（apply 值得的，归档已处理的）
+  try {
+    const applyRes = await applyPendingPromotions(rt);
+    if (applyRes.applied > 0 || applyRes.skipped > 0) {
+      rt.log.info(`[selfevolve] pending promotions applied=${applyRes.applied} skipped=${applyRes.skipped}`);
+    }
+  } catch (e) {
+    rt.log.debug(`[selfevolve] applyPendingPromotions: ${String(e)}`);
+  }
 
   // 收集输入：近 7 日 daily notes + dim 目录 + 改动日志
   const notes = collectRecentFiles(rt.cfg.workspaceDir, 7);
@@ -188,7 +199,7 @@ function buildProposalBody(o: {
 }): string {
   return `# memory-engine 自进化提案 ${o.id}
 
-> 本提案仅记录改动建议，**不自动应用**。由安全/可执行性/负责人确认后用 mem_rollback 或手工落地。
+> 本提案仅记录改动建议，**不自动应用**。由知安审安全、落苏审可执行性、绫潇/南南确认后用 mem_rollback 或手工落地。
 
 ## 输入快照
 - 复盘日期：${o.date}
