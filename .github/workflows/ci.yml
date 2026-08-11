@@ -2,9 +2,11 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
   pull_request:
-    branches: [main]
+    branches:
+      - main
 
 jobs:
   typecheck:
@@ -17,7 +19,8 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm run typecheck -- --pretty false || echo "note: plugin-entry types come from the OpenClaw SDK (peer dep)"
+      - name: Typecheck (tolerate missing OpenClaw SDK types)
+        run: npm run typecheck || echo "note: plugin-entry types come from the OpenClaw SDK (peer dep)"
 
   build:
     name: Build
