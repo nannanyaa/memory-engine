@@ -5,7 +5,7 @@
  * 保证：
  *   - 追加不覆盖（Hermes 原则）
  *   - 每次写盘可回滚（备份文件 + 撤销指令）
- *   - 与人工手动写盘并发不互相覆盖（极端情况靠 VFS 原子写 + 最终读改写）
+ *   - 与手动写盘并发不互相覆盖（极端情况靠 VFS 原子写 + 最终读改写）
  *
  * 绝不写 lossless 的 lcm.db / openclaw.json / AGENTS 机制文件。
  */
@@ -107,14 +107,14 @@ export function buildEmotionDimBlock(opts: {
   kind?: "节点" | "里程碑";
   sourceRef?: string;
   feeling?: string;
+  scene?: string;        // 新增：场景描述（情感记忆要“场景+原话”）
 }): string {
   const head = opts.kind === "里程碑" ? "## ⭐ 关系里程碑（引擎自动记录，P2 待确认）" : "## 💝 情感节点（引擎自动记录）";
   return `${head}
 
-- **日期**：${opts.date} ${opts.time}
-- **类别**：${opts.category}
-${opts.dim ? `- **维度**：${opts.dim}\n` : ""}${opts.confidence != null ? `- **置信度**：${opts.confidence.toFixed(2)}\n` : ""}- **原话**：「${opts.originalText}」
-${opts.feeling ? `- **感受**：${opts.feeling}\n` : ""}${opts.sourceRef ? `- **→ 来源**：${opts.sourceRef}\n` : ""}`;
+${opts.scene ? `- **场景**：${opts.scene}\n` : ""}- **原话**：「${opts.originalText}」
+- **维度/置信度**：${opts.dim ?? opts.category} / ${opts.confidence != null ? opts.confidence.toFixed(2) : "—"}
+${opts.feeling ? `- **感受**：${opts.feeling}\n` : ""}${opts.sourceRef ? `- **来源**：→ ${opts.sourceRef}\n` : ""}`;
 }
 
 /** 定位主工作区的 memory/dim/01-emotional.md。 */

@@ -18,6 +18,7 @@ import { Type } from "typebox";
 import { getRuntime, currentConfig } from "./runtime.js";
 import { memFind } from "./modules/recall.js";
 import { forceCompress } from "./modules/compaction.js";
+import { compactSessionTranscript } from "./modules/context-engine.js";
 import { MODULE_KEYS } from "./config.js";
 
 /** 统一文本返回格式（match registerTool 契约：AgentToolResult 需含 details）。 */
@@ -188,8 +189,9 @@ export function registerTools(api: OpenClawPluginApi): void {
       name: "mem_compact",
       label: "手动压缩上下文（mem_compact）",
       description:
-        "主动触发事件感知压缩：把某 session 窗口最老段（保留最近若干轮）提炼归档到 memory/events/，" +
-        "对旧话题瘦身。已压缩过的原文自动去重跳过（绝不压两次）。" +
+        "主动触发上下文压缩。同步走 context-engine 的 ROTATE 核心（保留 header+prelude+尾部最近若干条 message，" +
+        "前段原文先归档到 memory/events，再原子重写 transcript）——同步完成、返回真实释放的字节(文件 size 差)，" +
+        "可确认是否真降窗口占用。无法定位 transcript 时回退到事件管道归档。" +
         "适合 agent 主动收拢长会话、归备案结话题。未开启 enable_context_compaction 亦可作为手动归档能力。",
       parameters: Type.Object({
         sessionKey: Type.Optional(
@@ -199,36 +201,51 @@ export function registerTools(api: OpenClawPluginApi): void {
           Type.Integer({
             minimum: 2,
             maximum: 50,
-            description: "保留最近几轮不压缩（覆盖 recentWindowForInternal，默认=配置值）",
+            description: "保留尾部最近几条 message 不压缩（默认 8）",
           }),
+        ),
+        sessionFile: Type.Optional(
+          Type.String({ description: "(可选) 指定 transcript 文件绝对路径，跳过自动解析" }),
         ),
       }),
       async execute(_id, params) {
         const rt = getRuntime();
-        if (!rt?.engineDb) return textReply("mem_compact: engine-db not ready");
-        const p = params as { sessionKey?: string; keepRecent?: number };
-        // keepRecent 临时覆盖（force 时可显式指定，调用完恢复，不污染引擎自动配置）
-        const origKeep = rt.cfg.compaction.recentWindowForInternal;
-        if (typeof p.keepRecent === "number" && Number.isFinite(p.keepRecent)) {
-          rt.cfg.compaction.recentWindowForInternal = Math.max(
-            2,
-            Math.min(50, Math.floor(p.keepRecent)),
-          );
-        }
+        if (!rt) return textReply("mem_compact: engine not initialized");
+        const p = params as { sessionKey?: string; keepRecent?: number; sessionFile?: string };
         const sessionKey = (p.sessionKey ?? "agent:main:main").trim() || "default";
-        let res;
-        try {
-          res = await forceCompress(rt, sessionKey);
-        } finally {
-          rt.cfg.compaction.recentWindowForInternal = origKeep;
-        }
+
+        // 同步走 context-engine ROTATE 核心（返回真实字节 freed）
+        const sync = compactSessionTranscript(rt, {
+          sessionKey,
+          keepRecent: p.keepRecent,
+          sessionFile: p.sessionFile,
+        });
         const lines = [
-          `mem_compact: ${res.ok ? "✅ 已压缩" : "ℹ️ 未压缩"}`,
-          `  - session: ${res.sessionKey}`,
-          `  - 结果: ${res.reason}`,
-          `  - 归档轮数: ${res.archivedTurns} | 保留轮数: ${res.keptTurns} | 窗口总轮: ${res.totalTurns}`,
+          `mem_compact: ${sync.ok ? "✅ 已压缩（同步完成）" : "ℹ️ 未压缩"}`,
+          `  - session: ${sessionKey}`,
+          `  - transcript: ${sync.sessionFile ?? "(未解析)"}`,
+          `  - 结果: ${sync.reason}`,
+          `  - 释放字节: ${sync.bytesFreed}B${sync.bytesFreed > 0 ? ` (${(sync.bytesFreed / 1024).toFixed(1)}KB)` : ""}\t真实文件 size 差，可确认窗口占用降幅`,
+          `  - 丢弃消息: ${sync.droppedCount} | 保留尾部: ${sync.keptCount}`,
         ];
-        if (res.skippedDedup) lines.push("  - ⚠️ 命中去重：该段原文已归档过，跳过重复压缩");
+
+        // 无 transcript 可旋转时：回退到 legacy 事件管道归档（仍尽力归案）
+        if (!sync.ok && sync.reason === "no-session-transcript-resolved") {
+          if (!rt.engineDb) return textReply(lines.join("\n") + "\n（engine-db 未就绪，无法回退归档）");
+          const origKeep = rt.cfg.compaction.recentWindowForInternal;
+          if (typeof p.keepRecent === "number" && Number.isFinite(p.keepRecent)) {
+            rt.cfg.compaction.recentWindowForInternal = Math.max(2, Math.min(50, Math.floor(p.keepRecent)));
+          }
+          let res;
+          try {
+            res = await forceCompress(rt, sessionKey);
+          } finally {
+            rt.cfg.compaction.recentWindowForInternal = origKeep;
+          }
+          lines.push(`  - 回退事件管道: ${res.reason}（归档轮数 ${res.archivedTurns} / 保留 ${res.keptTurns}）`);
+          if (res.skippedDedup) lines.push("  - ⚠️ 命中去重：该段原文已归档过，跳过重复压缩");
+        }
+
         return textReply(lines.join("\n"));
       },
     },

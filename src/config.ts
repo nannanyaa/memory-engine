@@ -94,7 +94,8 @@ export interface MemoryEngineConfig {
     windowSize: number; // 相关性打分滑动窗口（前 N 轮，默认 10）
     relevanceThreshold: number; // 衬底：avgSim>=此值判定明确同事件、不压缩（实测话题内中位≈0.345，取 0.30 保护多数话题内轮）
     avgSimSwitchThreshold: number; // 主判据切换线：avgSim<=此值判话题切换（实测边界中位≈0.24、最优判别点≈0.26）
-    lengthThreshold: number; // 上下文长度阈值兜底（默认 0.20=20%），超则压缩
+    lengthThreshold: number; // 上下文长度阈值兜底（设计定 0.20=20%），超则压缩。用于常规后台压缩触发线。
+    emergencySyncThreshold: number; // 紧急同步压缩兜底阈值（设计定默认 0.50，不可更大）。上下文占比不低于此值时，强制同步压缩一次，防上下文爆掉。0=关闭。
     dropThreshold: number; // avgSim 切换线的 drop 镜像视图：drop=1-avgSim>=此值 等价于 avgSim<=切换线（保持单向、纯展示）
     recentWindowForInternal: number; // 前段窗口（avgSim 取最近几轮，同时作内部相关软信号窗口）
     internalRelevanceThreshold: number; // 近轮内部相关软信号（判别力弱，不再硬性门槛；仅辅助，防哑火）
@@ -109,7 +110,7 @@ export interface MemoryEngineConfig {
      * 0=关闭（仅按运行时实测基底 + 会话消息估算）。不精确，需按真实工具集调校。
      */
     contextToolOverheadTokens: number;
-    /** 启动时从现有会话历史回填窗口的最多轮数（一旦加载即能按现有上下文检测压缩）。 */
+    /** 启动时从现有会话历史回填窗口的最多轮数（设计定：一旦加载即能按现有上下文检测压缩）。 */
     backfillWindowSize: number;
     /** 回填时用于识别主会话的 session_key（如 agent:main:main）。空则跳过回填。 */
     backfillSessionKey: string;
@@ -131,6 +132,8 @@ export interface MemoryEngineConfig {
     memoryHighWaterMB: number;
     /** 资源控制：内存高水位时轮询等待间隔(ms)，等释放后再继续压缩。 */
     memoryPollMs: number;
+    guardWindowMs: number; // 【P0】【P0修复-会话活跃守卫】transcript 重写前的最小闲置毫秒数；会话活跃(距最后run < 此值)则跳过重写，等闲置再压。默认 3000ms。
+    promptEstimateCorrection: number; // 【过早触发修复】before_prompt_build 对完整 prompt 的 token 估算校正系数(<1=压低)。实测估算比真实上下文偏高约1.48x(19.7%真实→0.292估算)，默认0.7把它拉回贴近真实，避免误触发压缩。1=不校正。
     /**
      * assemble 摘要替换触发阈值：messages 估算 token / tokenBudget >= 此值才摘要替换（默认 0.22）。
      * 与 lengthThreshold 同源同语义（真按上下文占比触发），是 assemble 摘要替换的独立阈值。
@@ -142,7 +145,7 @@ export interface MemoryEngineConfig {
     summarizeMaxChars: number;
     /**
      * 方案 A：压缩落点目标占比（锯齿形：超 summarizeRatioThreshold 触发 → 压回到此值）。
-     * 触发线 0.30、落点 0.15（Web 端"已用/预算"上下文占比据此压缩）。默认 0.15。
+     * 设计定：触发线 0.30、落点 0.15（Web 端"已用/预算"上下文占比据此压缩）。默认 0.15。
      */
     summarizeTargetRatio: number;
   };
@@ -227,7 +230,7 @@ export function normalizeConfig(
     vector: {
       dbPath: asString(vector.dbPath) || `${stateDir}/memory-engine-vector`,
       embeddingBaseUrl: asString(vector.embeddingBaseUrl) || "",
-      embeddingModel: asString(vector.embeddingModel) || "",
+      embeddingModel: asString(vector.embeddingModel) || "embedding-2",
       embeddingApiKey: asString(vector.embeddingApiKey) || "",
       topK: asInt(vector.topK, 3),
     },
@@ -249,6 +252,8 @@ export function normalizeConfig(
       // 主判据切换线：avgSim<=此值判话题切换。标定：纯 avgSim 最优 F1≈0.50 @0.26（召回 5/8 边界、误报 7/73≈10%）。
       avgSimSwitchThreshold: asFloat(compaction.avgSimSwitchThreshold, 0.26),
       lengthThreshold: asFloat(compaction.lengthThreshold, 0.2),
+      // 紧急同步压缩兕底：默认 0.50（设计定，不可更大）。占比不少于此值时同步强制压缩一次。0=关闭。
+      emergencySyncThreshold: asFloat(compaction.emergencySyncThreshold, 0.5),
       // drop 镜像：1-avgSim，默认 = 1-0.26 = 0.74，与 avgSim 切换线同义（纯展示，不独立判定，避免双阈值冲突）。
       dropThreshold: asFloat(compaction.dropThreshold, 0.74),
       recentWindowForInternal: asInt(compaction.recentWindowForInternal, 5),
@@ -286,6 +291,8 @@ export function normalizeConfig(
       memoryHighWaterMB: asInt(compaction.memoryHighWaterMB, 512),
       // 高水位等待轮询间隔 5s。
       memoryPollMs: asInt(compaction.memoryPollMs, 5000),
+      guardWindowMs: asInt(compaction.guardWindowMs, 3000), // 【P0修复-会话活跃守卫】默认 3000ms
+      promptEstimateCorrection: asFloat(compaction.promptEstimateCorrection, 0.7), // 【过早触发修复】默认 0.7(校正1.48x虚高的~0.68，取0.7) 1=不校正
       // assemble 摘要替换：触发占比 0.22、至少折叠 6 条最老消息、单条摘要上限 1500 字符。
       summarizeRatioThreshold: asFloat(compaction.summarizeRatioThreshold, 0.30),
       summarizeMinOldMessages: asInt(compaction.summarizeMinOldMessages, 6),

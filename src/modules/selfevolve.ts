@@ -188,7 +188,7 @@ function buildProposalBody(o: {
 }): string {
   return `# memory-engine 自进化提案 ${o.id}
 
-> 本提案仅记录改动建议，**不自动应用**。需主理人审安全与可执行性确认后，用 mem_rollback 或手工落地。
+> 本提案仅记录改动建议，**不自动应用**。由安全/可执行性/负责人确认后用 mem_rollback 或手工落地。
 
 ## 输入快照
 - 复盘日期：${o.date}

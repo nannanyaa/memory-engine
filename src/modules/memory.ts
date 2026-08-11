@@ -9,8 +9,8 @@
  *   任一超标 -> 标记为高投入事项。换话题后新段从低位起计，不顶着旧 topic 累计。
  *   高投入 -> 自动登记当天 notes + 生成"待提拔"候选，写入 engine-db。
  *
- * ─── 修复说明（priority 高） ─────────────────────────────────────────────
- * 原 bug：topic=频道（"agent:main:qqbot"→"main:qqbot"），轮次=event.messages.length
+ * ─── hotfix 说明（现场抓到，priority 高） ───────────────────────────────
+ * 原 bug：topic=频道（"agent:main:<channel>"→"main:<channel>"），轮次=event.messages.length
  *   = 整场消息总数。同一频道换语义话题不换签名 -> 全算同一个 topic，轮次从 1 一路涨
  *   （实测 main:main 到 111 轮 / token 675786）。A 轨(>=minTurns)判断完全失真。
  * 修复：topic 粒度按「语义话题段」，轮次只累计当前段。话题切换用 embedding 余弦判定
@@ -34,7 +34,7 @@ import type { RuntimeContext } from "../runtime.js";
 import { windowOf } from "../db/engine-db.js";
 import { cosineSimilarity } from "./compaction.js";
 import { createCloudEmbedding } from "./vector.js";
-import { chatGeneric } from "../llm.js";
+import { chatGeneric, distillText } from "../llm.js";
 import {
   appendToFile,
   appendIndexEntry,
@@ -274,18 +274,23 @@ function estimateTokens(messages: string[]): number {
 export { windowOf };
 
 // ────────────────────────────────────────────────────────────────────────────
-// 投入度晋升闭环（自动合并，写前必过自审防语义漂移）
+// 投入度晋升闭环（授命自动合并，写前必过自审防语义漂移）
 // ────────────────────────────────────────────────────────────────────────────
 
 export interface PromotionCandidate {
+  /** 消息原文（供提炼；晋升落盘不再直接粘贴原文，只记“事情框架”）。 */
   text: string;
   source: string;
   ts: string;
 }
 
+/** 晋升落盘叙事框架安全上限（防蒸馏爆炸/烧上下文）。 */
+const PROMOTE_DISTILL_MAX_CHARS = 2200;
+
 /**
- * 晋升管线主体：自审 -> 归档判定 -> 追加合并（走 writers 网关，append 不覆写）。
- * 自审未通过 -> 返回 needs_review，不自动写入（保语义一致，防“印象≠事实”）。
+ * 晋升管线主体（3A，记"事"不记"话"）：
+ *   蒸馏出【事项/完成度/后续/关键节点】叙事框架 -> 写前自审 -> 归档判定 -> 追加合并。
+ * 蒸馏失败/无 LLM -> 降级为“来源指针 + 事件摘要截断”，绝不再退回抄原文。
  */
 export async function promoteCandidate(
   rt: RuntimeContext,
@@ -294,31 +299,34 @@ export async function promoteCandidate(
   if (!rt.cfg.enable_memory_promotion) return { status: "disabled" };
   if (isPromotionDeduped(rt, candidate)) return { status: "dup_skipped" };
 
-  // 0) 写前自审：LLM 比对“实际内容 vs 待写入事实”，防语义漂移
-  const selfCheck = await selfAudit(rt, candidate.text);
+  // 0) 把原文蒸馏成叙事框架：先摘“事”，再造“框架”。
+  const narrative = await distillToNarrative(rt, candidate);
+
+  // 1) 写前自审：LLM 比对“蒸馏后框架 vs 待写入事实”，防语义漂移（保留要求）。
+  const selfCheck = await selfAudit(rt, narrative);
   if (!selfCheck.consistent) {
     rt.log.warn(`[memory] promote needs_review: ${selfCheck.reason}`);
     return { status: "needs_review", reason: selfCheck.reason };
   }
 
-  // 1) 判定去向：MEMORY.md（通用/原则级）或 USER.md（用户密切）
+  // 2) 判定去向：MEMORY.md（通用/原则级）或 USER.md（用户密切）
   const isUser = /用户|用户偏好|user|主人|殿下/.test(candidate.source);
   const target = isUser ? userPath(rt.workspaceDir) : memoryPath(rt.workspaceDir);
 
-  // 2) 追加合并（走 writers 网关：写前备份 + 改动日志，append 不覆写）
-  const entry = buildEntry(candidate, true);
+  // 3) 追加合并（走 writers 网关：写前备份 + 改动日志，append 不覆写）
+  const entry = buildEntry(candidate, narrative, true);
   const res = appendToFile(
     target,
     entry,
     "memory",
     "晋升自动合并",
-    `promote: ${candidate.text.slice(0, 40)}`,  
+    `promote: ${candidate.text.slice(0, 40)}`,
     rt.cfg,
     rt.log,
   );
   if (!res.ok) return { status: "write_failed", reason: res.error };
 
-  // 3) 登记索引 + 台账防重复
+  // 4) 登记索引 + 台账防重复
   appendIndexEntry(
     indexPath(rt.workspaceDir),
     {
@@ -326,7 +334,7 @@ export async function promoteCandidate(
       module: "memory",
       kind: "promotion",
       target,
-      summary: candidate.text.slice(0, 120),
+      summary: narrative.slice(0, 120),
       source: candidate.source,
     },
     rt.cfg,
@@ -336,6 +344,102 @@ export async function promoteCandidate(
 
   rt.log.info(`[memory] promoted->${target} ${candidate.source}`);
   return { status: "merged", target, ts: candidate.ts };
+}
+
+/**
+ * 3A 蒸馏核心：把高投入 topic 的消息原文炼成“事情框架”（记“事”不记“话”）。
+ * 用现有 distillText（其 system prompt 已要求提炼事实/决定/偏好/承诺/情感温度），
+ * 但 prompt 额外把输出限定为叙事框架单行值。
+ * 失败/无 LLM -> 返回降级框架（来源指针 + 事件摘要截断），绝不回退为抄原文。
+ */
+async function distillToNarrative(
+  rt: RuntimeContext,
+  c: PromotionCandidate,
+): Promise<string> {
+  const cfg = rt.cfg;
+  const date = toISODate(new Date(c.ts).getTime());
+  const prompt =
+    `下面是今天一段高投入多轮对话（消息原文）。请把它提炼成“事情记录”叙事框架，\n` +
+    `只回答五行内容（每行给一句话，不用列表符号，直接给值；不确定填“无或不明确”）：\n` +
+    `事项：<今天做了什么，一句话归纳>\n` +
+    `完成度：<进行到哪一步，是否完成/暂停/待续>\n` +
+    `后续：<有/无，下一步是什么，若明确>\n` +
+    `关键节点：<重要里程碑/决策/共识，可一句>\n` +
+    `要求：只记“事”，不抄对话原话；保留关键人名/数字/时间；赌气/情绪宣泄类表达只标情感标签、不得当既定事实。\n\n原始对话：\n${c.text.slice(0, PROMOTE_DISTILL_MAX_CHARS)}`;
+  let distilled = "";
+  try {
+    distilled = await distillText(
+      { ...cfg.emotion, timeoutMs: 20_000, log: rt.log },
+      prompt,
+    );
+  } catch (e) {
+    rt.log.debug(`[memory] distill narrative failed: ${String(e)}`);
+    distilled = "";
+  }
+  const clean = (distilled ?? "").trim();
+  if (clean && clean !== "-0" && clean !== "-") {
+    // 从蒸馏文本中拆出五行值（按“事项：/完成度：/后续：/关键节点：”冒号定位）。
+    const lines = parseNarrativeLines(clean);
+    if (lines.事项 !== "digest_malformed") {
+      return buildNarrativeBlock(date, c.source, lines);
+    }
+    rt.log.warn(`[memory] distill output malformed for ${c.source}`);
+  }
+
+  // —— 降级：LLM 不可用/失败，只落“来源指针 + 事件摘要截断”，绝不再抄原文 ——
+  rt.log.warn(`[memory] distill unavailable; degraded narrative for ${c.source}`);
+  const degraded = {
+    事项: `高投入话题发生（来源 ${c.source}），未能提炼事件摘要`,
+    完成度: "不明确（LLM 蒸馏不可用）",
+    后续: "不明确",
+    关键节点: eventTruncate(c.text),
+  };
+  return buildNarrativeBlock(date, c.source, degraded);
+}
+
+/** 把蒸馏文本按五行冒号拆成 {事项,完成度,后续,关键节点}；缺项用来源提示兜底。 */
+function parseNarrativeLines(
+  distilled: string,
+): Record<"事项" | "完成度" | "后续" | "关键节点", string> {
+  const out: Record<"事项" | "完成度" | "后续" | "关键节点", string> = {
+    事项: "incomplete", 完成度: "incomplete", 后续: "incomplete", 关键节点: "incomplete",
+  };
+  for (const line of distilled.split(/\n+/)) {
+    for (const key of ["事项", "完成度", "后续", "关键节点"] as const) {
+      const idx = line.indexOf(`${key}：`);
+      if (idx === 0) {
+        out[key] = line.slice(2).trim();
+        break;
+      }
+    }
+  }
+  if (Object.values(out).some((v) => v === "incomplete")) {
+    // 蒸馏未按格式输出 -> 丢弃，走降级路径
+    return { 事项: "digest_malformed" } as Record<"事项" | "完成度" | "后续" | "关键节点", string>;
+  }
+  return out;
+}
+
+/** 事件摘要截断（降级兜底用，正向提示当前话题，不抄全文）。 */
+function eventTruncate(raw: string): string {
+  const flat = raw.replace(/\s+/g, " ").trim();
+  return flat.length > 80 ? `${flat.slice(0, 80)}…` : flat || "（无可用内容）";
+}
+
+/** 按定稿的叙事框架模板排版落盘条目。 */
+function buildNarrativeBlock(
+  date: string,
+  source: string,
+  v: Record<"事项" | "完成度" | "后续" | "关键节点", string>,
+): string {
+  return (
+    `## 📋 事情记录 · ${date}\n` +
+    `- **事项**：${v.事项}\n` +
+    `- **完成度**：${v.完成度}\n` +
+    `- **后续**：${v.后续}\n` +
+    `- **关键节点**：${v.关键节点}\n` +
+    `- **来源**：→ ${source}`
+  );
 }
 
 /** 去重键：来源 + 首 24 字符（内容相近视为重复，防自进化重复合并）。 */
@@ -352,7 +456,7 @@ function isPromotionDeduped(rt: RuntimeContext, c: PromotionCandidate): boolean 
   }
 }
 
-/** 自审：保证写入内容与真实认知一致。 */
+/** 自审：保证写入内容与真实认知一致（明确要求）。 */
 async function selfAudit(rt: RuntimeContext, text: string): Promise<{ consistent: boolean; reason: string }> {
   const p = `你是记忆引擎的“写前自审员”。以下是要写入记忆档案的内容，请判断：它是否与事实一致？有无“把印象当事实/情绪宣泄当事实/夸张”的情况？
 内容: ${text.slice(0, 2000)}
@@ -377,7 +481,11 @@ async function selfAudit(rt: RuntimeContext, text: string): Promise<{ consistent
   }
 }
 
-/** 构造档案追加条目文本。 */
-function buildEntry(c: PromotionCandidate, consistent: boolean): string {
-  return `\n## 🎓 ${toISODate(Date.now())} · ${consistent ? "已自审" : "待审"}\n- **来源**: ${c.source}\n- ${c.text}\n`;
+/** 构造档案追加条目文本：写“事情框架”（叙事），不是原文拼接。 */
+function buildEntry(
+  c: PromotionCandidate,
+  narrative: string,
+  consistent: boolean,
+): string {
+  return `\n## 🎓 ${toISODate(Date.now())} · ${consistent ? "已自审" : "待审"}\n` + narrative + `\n`;
 }

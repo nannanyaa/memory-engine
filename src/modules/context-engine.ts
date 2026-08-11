@@ -8,7 +8,7 @@
  * 接管方式：registerContextEngine(id, factory)，然后由配置 plugins.slots.contextEngine = 本引擎 id 生效。
  * —— 硬性约束：不改 slots.contextEngine 实际值（当前仍为 lossless-claw），
  *    因此本模块注册即使开启 enable_context_compaction 也不会接管（safe, deferred）。
- *    真正接管由用户确认后配置 slots.contextEngine + 重启。
+ *    真正接管由负责人确认后单独改配置 + 重启。
  *
  * 设计：与 A 路（compaction.ts）共享向量窗口/事件检测/归档能力。
  *   - ingest: 把消息投入后台窗口（不阻塞）。
@@ -38,7 +38,7 @@ import { appendToFile } from "../writers.js";
 import { toISODate } from "../time.js";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
-import { readFileSync, writeFileSync, renameSync, statSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, renameSync, statSync, existsSync, readdirSync } from "node:fs";
 
 /** 本引擎的 id（slots.contextEngine 设为它即启用接管）。 */
 export const CONTEXT_ENGINE_ID = "memory-engine-context";
@@ -160,141 +160,41 @@ function createContextEngine(
       rt?.log?.info(
         `[context-engine] maintain 判据: transcriptMsgs=${allMsgs.length} ctxUsed=${rt.contextUsage?.usedTokens} budget=${budget} ratio=${ratio.toFixed(3)}`,
       );
+      // 【压缩触发修复·2026-08-11】常规触发线必须用 lengthThreshold(低)。
+      // 之前错用 emergencySyncThreshold(0.5) 当 main 线，导致 25%~50% 区间(如49%)below-threshold 不压 → 压缩感觉没接入。
+      // 现在：ratio < lengthThreshold(0.25) 才不压；ratio >= emergency(0.5) 额外标记强制同步兜底。
+      const isEmergency = ratio >= rt.cfg.compaction.emergencySyncThreshold;
       if (ratio < rt.cfg.compaction.lengthThreshold) {
         result.reason = `below-threshold`;
         rt?.log?.info(`[context-engine] maintain return: below-threshold (ratio=${ratio.toFixed(3)})`);
         return result;
       }
       rt.log.info(
-        `[context-engine] maintain: ratio=${ratio.toFixed(3)}>=${rt.cfg.compaction.lengthThreshold} tokenCount=${tokenCount} budget=${budget} session=${params.sessionId}`,
-      );
+        `[context-engine] maintain: ratio=${ratio.toFixed(3)}>=length=${rt.cfg.compaction.lengthThreshold}${isEmergency ? ` [EMERGENCY>=${rt.cfg.compaction.emergencySyncThreshold}]` : ""} tokenCount=${tokenCount} budget=${budget} session=${params.sessionId}`,
 
-      const msgs = allMsgs;
       // ---- Session Rotation（学习 lossless rewriteTranscriptForRotate）----
-      // 目标是让 transcript 文件真正瘦身（保留 header + prelude + 尾部 freshTail 条消息），
+      // 目标：让 transcript 文件真正瘦身（保留 header + prelude + 尾部 keepTail 条消息），
       // 前段原文先归档到 memory/events（不丢原文铁律），再原子重写 transcript 文件。
       // OpenClaw 检测到文件变更后，后续 run 会用瘦身后的 transcript → 上下文占比真降。
-
-      // 计算要用多少条尾部消息才能把 ratio 压回目标以下（方案 A：压落点 0.12，配置化）
-      const targetRatio = Math.max(0.05, adjustTargetRatio(rt.cfg.compaction.lengthThreshold, rt.cfg.compaction.summarizeTargetRatio));
-      const msgTokenList = msgs.map((e) => {
-        const m = e.message as { role?: string; content?: unknown };
-        const txt =
-          typeof m.content === "string"
-            ? m.content
-            : Array.isArray(m.content)
-              ? m.content.map((p) => (typeof p === "string" ? p : (p as { text?: string })?.text || "")).join("\n")
-              : "";
-        return { id: e.id as string, txt, len: txt.length };
+      // reduceAndRewrite 是 maintain 与 mem_compact 手动路径共用的同步 ROTATE 压缩核心。
+      const rotateRes = reduceAndRewrite({
+        rt,
+        sessionFile,
+        sessionId: params.sessionId,
+        sessionKey: params.sessionKey,
+        entries,
+        allMsgs,
+        tokenCount,
+        budget,
       });
-      // 待削减 token = 当前 - 目标预算。从尾部向左累计，找到需保留的最小尾部条数 keepTail。
-      const budgetNum = budget > 0 ? budget : 900000;
-      const targetTokens = Math.floor(budgetNum * targetRatio);
-      let keepTail = msgs.length; // 默认全留（不削减）
-      let keepTokens = tokenCount;
-      for (let i = msgTokenList.length - 1; i >= 0; i--) {
-        const t = Math.max(1, tokenEstimateOfText(msgTokenList[i].txt));
-        if (keepTokens - t <= targetTokens) break; // 再减一条就低于目标，停
-        keepTokens -= t;
-        keepTail = i;
-      }
-      // 至少保留 4 条尾部消息，且不能全删
-      keepTail = Math.max(4, Math.min(keepTail, msgs.length - 1));
-      if (keepTail >= msgs.length - 1) {
-        result.reason = "no-enough-excess";
-        rt?.log?.info(`[context-engine] maintain return: no-enough-excess (keepTail=${keepTail}/${msgs.length})`);
-        return result;
-      }
-      const droppedMsgs = msgs.slice(0, keepTail);
-      rt.log.info(
-        `[context-engine] maintain ROTATE: total=${msgs.length} drop=${droppedMsgs.length} keepTail=${msgs.length - droppedMsgs.length} tokens ${tokenCount}->~${keepTokens} (target=${targetTokens}) session=${params.sessionId}`,
-      );
-
-      // 1) 归档被丢弃的原始消息（不丢原文铁律）
-      const droppedText = droppedMsgs
-        .map((e) => {
-          const m = e.message as { role?: string; content?: unknown };
-          const txt =
-            typeof m.content === "string"
-              ? m.content
-              : Array.isArray(m.content)
-                ? m.content.map((p) => (typeof p === "string" ? p : (p as { text?: string })?.text || "")).join("\n")
-                : "";
-          return `[${(m.role || "?").toUpperCase()}] ${txt.trim()}`;
-        })
-        .join("\n\n")
-        .slice(0, 60000);
-      if (droppedText.trim()) {
-        try {
-          const date = toISODate(Date.now());
-          const archivePath = join(rt.cfg.compaction.archiveDir, `${date}.md`);
-          const block =
-            `## 📎 maintain 会话轮换归档 · ${(params.sessionKey || params.sessionId || "default")}\n\n` +
-            `- **轮换时间**：${new Date().toISOString()}\n` +
-            `- **丢弃消息数**：${droppedMsgs.length}（保留尾部 ${msgs.length - droppedMsgs.length} 条）\n\n` +
-            `<details>\n<summary>原文（只读存档，不参与上下文）</summary>\n\n${droppedText}\n</details>`;
-          void appendToFile(archivePath, block, "context-engine", "maintain 会话轮换归档", `rotate ${params.sessionId}: save ${droppedMsgs.length} msgs`, rt.cfg, rt.log);
-        } catch {
-          /* 归档失败不阻塞 */
-        }
-      }
-
-      // 2) 原子重写 transcript 文件：保留 header + prelude(最新各一) + 尾部 keepTail 条 message
-      try {
-        const originalSize = existsSync(sessionFile) ? statSync(sessionFile).size : 0;
-        const header = entries.find((e) => e.type === "session") ?? null;
-        // 收集 prelude 最新各一
-        const preludeMap = new Map<string, Record<string, unknown>>();
-        for (const e of entries) {
-          if (e.type !== "message" && (e.type === "model_change" || e.type === "thinking_level_change" || e.type === "session")) {
-            preludeMap.set(e.type as string, e);
-          }
-        }
-        // 尾部保留：entries 中从 droppedMsgs 最后那个 message 的 index+1 开始的所有 entry
-        const lastDropId = droppedMsgs.length > 0 ? (droppedMsgs[droppedMsgs.length - 1].id as string) : null;
-        const lastDropIndex = entries.findIndex((e) => e.id === lastDropId);
-        const keepEntries: Array<Record<string, unknown>> = [];
-        // prelude（session/model_change/thinking_level_change 各最新一条，若不在尾部保留区则手动放最前）
-        for (const type of ["session", "model_change", "thinking_level_change"] as const) {
-          const p = preludeMap.get(type);
-          if (p) keepEntries.push({ ...p });
-        }
-        // 从 lastDropIndex+1 到文件尾的全部 entry（含尾部消息 + 后续所有条目）
-        for (let i = lastDropIndex + 1; i < entries.length; i++) {
-          keepEntries.push({ ...entries[i] });
-        }
-        // 重新线性化 parentId 链（防 DAG 断裂）：从头串成线性链
-        if (keepEntries.length > 0) {
-          let prev: string | null = null;
-          for (const e of keepEntries) {
-            const next = { ...e, parentId: prev };
-            prev = typeof e.id === "string" ? (e.id as string) : prev;
-            Object.assign(e, next);
-          }
-        }
-        const serialized =
-          (header ? JSON.stringify(header) : JSON.stringify({ type: "session", version: 3, id: params.sessionId, timestamp: new Date().toISOString(), cwd: rt.workspaceDir })) +
-          "\n" +
-          keepEntries.map((e) => JSON.stringify(e)).join("\n") +
-          "\n";
-        // 原子写：先写临时文件再 rename
-        const tmp = `${sessionFile}.rotate-tmp`;
-        writeFileSync(tmp, serialized, "utf8");
-        renameSync(tmp, sessionFile);
-        const newSize = statSync(sessionFile).size;
-        result.changed = true;
-        result.bytesFreed = Math.max(0, originalSize - newSize);
-        result.rewrittenEntries = droppedMsgs.length;
-        result.reason = "rotated-transcript";
-        rt.log.info(
-          `[context-engine] maintain ROTATE done: drop=${droppedMsgs.length} size ${originalSize}->${newSize} freed=${result.bytesFreed} session=${params.sessionId}`,
-        );
-      } catch (e) {
-        result.reason = `rotate-error:${String(e)}`;
-        rt.log.warn(`[context-engine] maintain ROTATE error: ${String(e)}`);
-      }
+      if (rotateRes.changed) result.changed = true;
+      result.bytesFreed = rotateRes.bytesFreed;
+      result.rewrittenEntries = rotateRes.rewrittenEntries;
+      result.reason = rotateRes.reason;
+      rt?.log?.info(`[context-engine] maintain reduceAndRewrite: ${rotateRes.reason}`);
       return result;
     },
+
 
     async bootstrap(params): Promise<BootstrapResult> {
       const rt = getRuntime();
@@ -450,6 +350,376 @@ function createContextEngine(
   };
 
   return engine;
+}
+
+// ---------------------------------------------------------------------------
+// ROTATE 压缩核心（maintain 与 mem_compact 手动路径共享）
+// ---------------------------------------------------------------------------
+
+export interface ReduceAndRewriteInput {
+  rt: RuntimeContext;
+  sessionFile: string;
+  sessionId: string;
+  sessionKey?: string;
+  /** 已解析的 transcript 条目（与 maintain 里 entries 同源）。 */
+  entries: Array<Record<string, unknown>>;
+  /** 已过滤出的 message 控制条目（带 id + message）。 */
+  allMsgs: Array<Record<string, unknown>>;
+  /** 已解析的实时上下文 token（ctxUsed 或估算），用于 keepTail 口径计算。 */
+  tokenCount: number;
+  /** 已解析的上下文 token 预算。 */
+  budget: number;
+  /**
+   * 手动模式（mem_compact）辅助：强制保留最尾 keepRecent 条 message（≥4），
+   * 超出部分一并轮换掉，确保手动压缩真降 transcript 体积。
+   * 自动模式（maintain）不传 → 保持原有基于目标占比的 keepTail 行为（不回归）。
+   */
+  keepRecent?: number;
+}
+
+export interface ReduceAndRewriteResult {
+  /** transcript 是否真的被重写瘦身。 */
+  changed: boolean;
+  /** 词义化 reason：rotated-transcript / no-enough-excess / rotated-deferred-active / too-few-messages / rotate-error:* */
+  reason: string;
+  /** 真实文件字节差（originalSize - newSize，不回写则 0）。 */
+  bytesFreed: number;
+  /** 实际丢弃（重写剔除）的消息条数。 */
+  rewrittenEntries: number;
+  /** 压缩后保留的尾部消息条数。 */
+  keptCount: number;
+}
+
+/**
+ * 同步 ROTATE + 原子重写 transcript（不丢原文铁律：前段原文先归档到 memory/events）。
+ *
+ * 这是 context-engine 的“会话轮换压缩核心”，供两处同步共用：
+ *   1) maintain（自动）：预判紧急阈值通过后调用，行为与历史完全一致；
+ *   2) mem_compact（手动）：mem_compact 手动触发时同步走同一核心，返回真实 freed bytes。
+ *
+ * 同步保证：本函数在返回前已完成 transcript 原子重写（writeFileSync + renameSync），
+ * 调用方（含 mem_compact 工具）拿到 result 时即可确认是否真降窗口占用。
+ * 归档原文用 appendToFile（写前备份+改动日志），失败不阻塞重写。
+ */
+export function reduceAndRewrite(input: ReduceAndRewriteInput): ReduceAndRewriteResult {
+  const { rt, sessionFile, sessionId, sessionKey, entries, allMsgs, tokenCount, budget } = input;
+  const base: ReduceAndRewriteResult = {
+    changed: false,
+    reason: "init",
+    bytesFreed: 0,
+    rewrittenEntries: 0,
+    keptCount: allMsgs.length,
+  };
+
+  const msgs = allMsgs;
+  if (msgs.length < 2) {
+    base.reason = "too-few-messages";
+    return base;
+  }
+
+  // 计算要用多少条尾部消息才能把 ratio 压回目标以下（方案 A：压落点 0.12，配置化）
+  const targetRatio = Math.max(0.05, adjustTargetRatio(rt.cfg.compaction.lengthThreshold, rt.cfg.compaction.summarizeTargetRatio));
+  const msgTokenList = msgs.map((e) => {
+    const m = e.message as { role?: string; content?: unknown };
+    const txt =
+      typeof m.content === "string"
+        ? m.content
+        : Array.isArray(m.content)
+          ? m.content.map((p) => (typeof p === "string" ? p : (p as { text?: string })?.text || "")).join("\n")
+          : "";
+    return { id: e.id as string, txt, len: txt.length };
+  });
+  // 修复 keepTail 口径 bug（方案问题1，已审核保留）
+  // 起点统一为「纯消息 token」：tokenCount 含不可删的 overhead（系统提示+工具），
+  // 若用它作起点、却用不含 overhead 的 targetTokens 作目标，overhead 会挡住递减、
+  // 循环过早 break，导致只 drop 4-6 条、转录文件 freed 仅几 KB、「压不下来」。
+  // 修复：msgTokenList 求和得纯消息总量，目标=targetTokens 减去 overhead（仍是纯消息口径），
+  // 从尾部累减，直到剩余消息 token <= 可删目标。
+  const budgetNum = budget > 0 ? budget : 900000;
+  const targetTokens = Math.floor(budgetNum * targetRatio);
+  const msgTokensTotal = msgTokenList.reduce(
+    (s, x) => s + Math.max(1, tokenEstimateOfText(x.txt)),
+    0,
+  );
+  const overheadTokens = Math.max(0, tokenCount - msgTokensTotal); // 系统提示+工具（不可删）
+  const targetMsgTokens = Math.max(0, targetTokens - overheadTokens); // 可删消息目标（纯消息口径）
+  let keepTail = msgs.length; // 默认全留（不削减）
+  let keepTokens = msgTokensTotal;
+  for (let i = msgTokenList.length - 1; i >= 0; i--) {
+    const t = Math.max(1, tokenEstimateOfText(msgTokenList[i].txt));
+    if (keepTokens - t <= targetMsgTokens) break; // 剩余消息 <= 可删目标，停
+    keepTokens -= t;
+    keepTail = i;
+  }
+  // 至少保留 4 条尾部消息，且不能全删。
+  keepTail = Math.max(4, Math.min(keepTail, msgs.length - 1));
+  // 手动模式：保留最尾 keepRecent 条（默认为自动算出的 keepTail），超出部分一并轮换掉
+  if (typeof input.keepRecent === "number" && Number.isFinite(input.keepRecent) && input.keepRecent > 0) {
+    const keepCapped = Math.max(4, Math.min(Math.floor(input.keepRecent), msgs.length - 4));
+    keepTail = Math.max(keepTail, msgs.length - keepCapped);
+  }
+  if (keepTail >= msgs.length - 1) {
+    base.reason = "no-enough-excess";
+    rt?.log?.info(`[context-engine] reduceAndRewrite: no-enough-excess (keepTail=${keepTail}/${msgs.length})`);
+    return base;
+  }
+  const droppedMsgs = msgs.slice(0, keepTail);
+  base.keptCount = msgs.length - droppedMsgs.length;
+  rt.log.info(
+    `[context-engine] reduceAndRewrite ROTATE: total=${msgs.length} drop=${droppedMsgs.length} keepTail=${base.keptCount} tokens ${tokenCount}->~${keepTokens} (target=${targetTokens}) session=${sessionId}`,
+  );
+
+  // 1) 归档被丢弃的原始消息（不丢原文铁律）
+  const droppedText = droppedMsgs
+    .map((e) => {
+      const m = e.message as { role?: string; content?: unknown };
+      const txt =
+        typeof m.content === "string"
+          ? m.content
+          : Array.isArray(m.content)
+            ? m.content.map((p) => (typeof p === "string" ? p : (p as { text?: string })?.text || "")).join("\n")
+            : "";
+      return `[${((m.role as string) || "?").toUpperCase()}] ${txt.trim()}`;
+    })
+    .join("\n\n")
+    .slice(0, 60000);
+  if (droppedText.trim()) {
+    try {
+      const date = toISODate(Date.now());
+      const archivePath = join(rt.cfg.compaction.archiveDir, `${date}.md`);
+      const block =
+        `## 📎 会话轮换归档 · ${(sessionKey || sessionId || "default")}\n\n` +
+        `- **轮换时间**：${new Date().toISOString()}\n` +
+        `- **丢弃消息数**：${droppedMsgs.length}（保留尾部 ${base.keptCount} 条）\n\n` +
+        `<details>\n<summary>原文（只读存档，不参与上下文）</summary>\n\n${droppedText}\n</details>`;
+      void appendToFile(archivePath, block, "context-engine", "会话轮换归档", `rotate ${sessionId}: save ${droppedMsgs.length} msgs`, rt.cfg, rt.log);
+    } catch {
+      /* 归档失败不阻塞 */
+    }
+  }
+
+  // 2) 原子重写 transcript 文件：保留 header + prelude(最新各一) + 尾部 keepTail 条 message
+  // 【P0修复-会话活跃守卫】若当前会话尾近仍活跃（最近一次 run/工具调用距今过近），
+  // 说明可能有进行中的工具结果未写完 transcript，此时重写会吞掉它(missing tool result)。
+  // 因此跳过本轮重写，等会话闲置(超过 guardWindowMs)再压。不阻塞、不报错。
+  {
+    const guardWindowMs =
+      typeof rt.cfg.compaction.guardWindowMs === "number" && rt.cfg.compaction.guardWindowMs > 0
+        ? rt.cfg.compaction.guardWindowMs
+        : 3000;
+    const idleFor = rt.lastActiveTs ? Date.now() - rt.lastActiveTs : Infinity;
+    if (idleFor < guardWindowMs) {
+      base.reason = `rotated-deferred-active (idle=${idleFor}ms<${guardWindowMs}ms)`;
+      rt?.log?.info(`[context-engine] reduceAndRewrite deferred: session active (idle=${idleFor}ms<${guardWindowMs}ms), skip this turn`);
+      return base;
+    }
+  }
+  try {
+    const originalSize = existsSync(sessionFile) ? statSync(sessionFile).size : 0;
+    const header = entries.find((e) => e.type === "session") ?? null;
+    // 收集 prelude 最新各一
+    const preludeMap = new Map<string, Record<string, unknown>>();
+    for (const e of entries) {
+      if (e.type !== "message" && (e.type === "model_change" || e.type === "thinking_level_change" || e.type === "session")) {
+        preludeMap.set(e.type as string, e);
+      }
+    }
+    // 尾部保留：entries 中从 droppedMsgs 最后那个 message 的 index+1 开始的所有 entry
+    const lastDropId = droppedMsgs.length > 0 ? (droppedMsgs[droppedMsgs.length - 1].id as string) : null;
+    const lastDropIndex = entries.findIndex((e) => e.id === lastDropId);
+    const keepEntries: Array<Record<string, unknown>> = [];
+    // prelude（session/model_change/thinking_level_change 各最新一条，若不在尾部保留区则手动放最前）
+    for (const type of ["session", "model_change", "thinking_level_change"] as const) {
+      const p = preludeMap.get(type);
+      if (p) keepEntries.push({ ...p });
+    }
+    // 从 lastDropIndex+1 到文件尾的全部 entry（含尾部消息 + 后续所有条目）
+    for (let i = lastDropIndex + 1; i < entries.length; i++) {
+      keepEntries.push({ ...entries[i] });
+    }
+    // 重新线性化 parentId 链（防 DAG 断裂）：从头串成线性链
+    if (keepEntries.length > 0) {
+      let prev: string | null = null;
+      for (const e of keepEntries) {
+        const next = { ...e, parentId: prev };
+        prev = typeof e.id === "string" ? (e.id as string) : prev;
+        Object.assign(e, next);
+      }
+    }
+    const serialized =
+      (header ? JSON.stringify(header) : JSON.stringify({ type: "session", version: 3, id: sessionId, timestamp: new Date().toISOString(), cwd: rt.workspaceDir })) +
+      "\n" +
+      keepEntries.map((e) => JSON.stringify(e)).join("\n") +
+      "\n";
+    // 原子写：先写临时文件再 rename
+    const tmp = `${sessionFile}.rotate-tmp`;
+    writeFileSync(tmp, serialized, "utf8");
+    renameSync(tmp, sessionFile);
+    const newSize = statSync(sessionFile).size;
+    base.changed = true;
+    base.bytesFreed = Math.max(0, originalSize - newSize);
+    base.rewrittenEntries = droppedMsgs.length;
+    base.reason = "rotated-transcript";
+    rt.log.info(
+      `[context-engine] reduceAndRewrite ROTATE done: drop=${droppedMsgs.length} size ${originalSize}->${newSize} freed=${base.bytesFreed} session=${sessionId}`,
+    );
+  } catch (e) {
+    base.reason = `rotate-error:${String(e)}`;
+    rt.log.warn(`[context-engine] reduceAndRewrite ROTATE error: ${String(e)}`);
+  }
+  return base;
+}
+
+// ---------------------------------------------------------------------------
+// mem_compact 手动路径：解析 transcript 文件 + 同步调用 reduceAndRewrite
+// ---------------------------------------------------------------------------
+
+export interface ManualCompactParams {
+  sessionKey: string;
+  /** 手动压缩目标：保留尾部至多 keepRecent 条消息。默认 8。 */
+  keepRecent?: number;
+  /** 指定 transcript 文件绝对路径（跳过自动解析，供测试/精准定位用）。 */
+  sessionFile?: string;
+}
+
+export interface ManualCompactResult {
+  ok: boolean;
+  reason: string;
+  bytesFreed: number;
+  droppedCount: number;
+  keptCount: number;
+  sessionFile?: string;
+}
+
+/**
+ * 从 sessionKey（形如 agent:<agent>:<session> / agent:main:main）解析 agentId，并定位该 agent 的
+ * sessions 目录下“最近活跃”的 transcript 文件（非 trajectory/非 deleted 的 .jsonl，取 mtime 最新）。
+ * main 会话的 session label 并不等于文件 UUID，因此用“最新写入的会话文件”作为手动压缩目标——
+ * mem_compact 由 agent 在自身会话中触发，最新会话即当前活跃会话。
+ * 无法解析或找不到文件返回 null（调用方回退到 legacy 管道归档）。
+ */
+export function resolveSessionTranscriptFile(
+  rt: RuntimeContext,
+  sessionKey: string,
+): string | null {
+  try {
+    const parts = String(sessionKey || "").split(":");
+    // 形如 agent:<agentId>:<label>；无前缀则整串视为 agentId
+    let agentId = parts.length >= 2 && parts[0] === "agent" ? parts[1] : parts[0];
+    agentId = String(agentId || "main").toLowerCase();
+    const agentsRoot = join(rt.workspaceDir, "..", "agents");
+    const sessionsDir = join(agentsRoot, agentId, "sessions");
+    if (!existsSync(sessionsDir)) return null;
+    const candidates = readdirSync(sessionsDir)
+      .filter((f) => f.endsWith(".jsonl") && !f.endsWith(".trajectory.jsonl") && !f.includes(".deleted."))
+      .map((f) => {
+        try {
+          const p = join(sessionsDir, f);
+          return { p, m: statSync(p).mtimeMs };
+        } catch {
+          return null;
+        }
+      })
+      .filter((x): x is { p: string; m: number } => x !== null)
+      .sort((a, b) => b.m - a.m)
+      .map((x) => x.p);
+    return candidates.length > 0 ? candidates[0] : null;
+  } catch {
+    return null;
+  }
+}
+
+/** 解析 transcript JSONL 为条目数组（跳过坏行）。同步。 */
+function parseTranscriptEntries(sessionFile: string): Array<Record<string, unknown>> {
+  try {
+    return readFileSync(sessionFile, "utf8")
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .map((l) => {
+        try {
+          return JSON.parse(l) as Record<string, unknown>;
+        } catch {
+          return null;
+        }
+      })
+      .filter((e): e is Record<string, unknown> => e !== null);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * mem_compact 手动同步压缩入口：
+ *   1) 解析目标 transcript 文件（可显式传 sessionFile，否则按 sessionKey 自动解析就近活跃会话）；
+ *   2) 读条目 + 过滤 message；
+ *   3) 用消息估算 token + 配置预算作占比（enable_* 全关时 ctxUsed 不可用，退回估算）；
+ *   4) 同步调用 reduceAndRewrite（ROTATE + 归档 + 原子重写），返回真实字节 freed。
+ *
+ * 同步保证：本函数在返回前已完成 transcript 原子重写；调用方（mem_compact 工具）据
+ * bytesFreed 即可确认是否真降窗口占用。
+ */
+export function compactSessionTranscript(
+  rt: RuntimeContext,
+  p: ManualCompactParams,
+): ManualCompactResult {
+  const sessionKey = (p.sessionKey || "default").trim();
+  const sessionFile = p.sessionFile || resolveSessionTranscriptFile(rt, sessionKey);
+  if (!sessionFile) {
+    return {
+      ok: false,
+      reason: "no-session-transcript-resolved",
+      bytesFreed: 0,
+      droppedCount: 0,
+      keptCount: 0,
+    };
+  }
+  const entries = parseTranscriptEntries(sessionFile);
+  const allMsgs = entries.filter(
+    (e) => e.type === "message" && typeof e.id === "string" && e.message,
+  );
+  const sessionId =
+    (entries.find((e) => e.type === "session" && typeof e.id === "string")?.id as string) ||
+    sessionKey;
+
+  // enable_* 全关时 rt.contextUsage 多为 0/0；这里统一用「配置预算 + 消息估算」作占比输入。
+  const budget = rt.cfg.compaction.contextTokenBudget > 0 ? rt.cfg.compaction.contextTokenBudget : 900000;
+  const tokenCount = estimateMessages(
+    allMsgs.map((e) => {
+      const m = e.message as { role?: string; content?: unknown };
+      return typeof m.content === "string"
+        ? m.content
+        : Array.isArray(m.content)
+          ? m.content.map((x) => (typeof x === "string" ? x : (x as { text?: string })?.text || "")).join("\n")
+          : "";
+    }),
+  );
+
+  const keepRecent =
+    typeof p.keepRecent === "number" && Number.isFinite(p.keepRecent)
+      ? Math.max(2, Math.min(50, Math.floor(p.keepRecent)))
+      : 8;
+
+  const res = reduceAndRewrite({
+    rt,
+    sessionFile,
+    sessionId,
+    sessionKey,
+    entries,
+    allMsgs,
+    tokenCount,
+    budget,
+    keepRecent,
+  });
+
+  return {
+    ok: res.changed,
+    reason: res.reason,
+    bytesFreed: res.bytesFreed,
+    droppedCount: res.rewrittenEntries,
+    keptCount: res.keptCount,
+    sessionFile,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -757,7 +1027,7 @@ async function distillInBackground(
 
 /**
  * 方案 A：压缩落点目标占比（锯齿形：超 lengthThreshold 触发 → 压回到 target）。
- * 触发线 0.25、落点 0.12（整体在 15%~20% 波动）。
+ * 设计定：触发线 0.25、落点 0.12（整体在 15%~20% 波动）。
  * target 取配置 summarizeTargetRatio（默认 0.12），缺失回退×0.85 可回滚。
  * 落点必须严格 < 触发线，`threshold - 0.01` 保险防止配置误设≥触发线导致死循环压缩。
  * 返回 [0.05, min(target, threshold-0.01)]。

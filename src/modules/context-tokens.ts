@@ -1,5 +1,5 @@
 /**
- * context-tokens.ts — 真实上下文 token 用量捕获（脱离 lcm.db 的主判据）
+ * context-tokens.ts — 真实上下文 token 用量捕获（脱离 lcm.db 的主判据，2026-08-09 深挖根因）
  *
  * 根因（决定性）：maybeCompressByRealLength 旧的 usedTokens 主来源是 rt.lcm.getActiveConversation()
  *   （读 lossless 的只读库 lcm.db）。"完整卸载 lossless"后 lcm.db 被删 → rt.lcm=null → usedTokens=0
@@ -243,7 +243,12 @@ export async function snapshotFromTurnPrepare(
   event: PluginAgentTurnPrepareEvent,
   base: ContextBaseOverhead,
 ): Promise<ContextUsageSnapshot> {
-  return makeContextUsageSnapshot(ctx, event.messages, base);
+  // 【快照稳定性修复·Web横跳根因】event.prompt 为空时，不能落 0/低值否则 assemble fallback 估算偏大触发反复折叠(Web 20↔49横跳)。
+  // 用 event.messages 估算；即便 messages 也空，也至少保留 baseTokens(系统+工具) 作为有效快照，绝不写 0。
+  const snap = await makeContextUsageSnapshot(ctx, event.messages, base);
+  const baseTokens = (base.systemPromptTokens || 0) + (base.toolOverheadTokens || 0);
+  if (snap.usedTokens <= 0) snap.usedTokens = baseTokens;
+  return snap;
 }
 
 /** before_prompt_build 事件适配。 */
@@ -251,6 +256,7 @@ export async function snapshotFromBeforePromptBuild(
   ctx: PluginHookAgentContext,
   event: PluginHookBeforePromptBuildEvent,
   base: ContextBaseOverhead,
+  correction?: number,
 ): Promise<ContextUsageSnapshot> {
   // 修复A（2026-08-10）：优先用已装配的完整 prompt 估算分子。
   // 旧实现用 event.messages，在 agent_end 常为空 → usedTokens≈0 → 永远达不到 30% 触发线。
@@ -266,7 +272,12 @@ export async function snapshotFromBeforePromptBuild(
           ? ctx.contextWindowReferenceTokens
           : 0);
     const baseTokens = (base.systemPromptTokens || 0) + (base.toolOverheadTokens || 0);
-    const promptTokens = await estimateMessagesTokens([{ content: prompt }]);
+    let promptTokens = await estimateMessagesTokens([{ content: prompt }]);
+    // 【过早触发修复】实测 estimateMessagesTokens 对完整 prompt(系统+工具+全部消息拼接)估算比真实上下文偏高约1.48x
+    // (真实19.7% → 估算0.292)，导致 summarize/length 在真实占比未达标时就误触发折叠、打断连续性。
+    // 用 promptEstimateCorrection(<1) 压低估算，贴近真实占比(Web面板)。1=不校正。
+    const f = typeof correction === "number" && correction > 0 && correction < 1 ? correction : 1;
+    if (f < 1) promptTokens = Math.round(promptTokens * f);
     return {
       budget,
       usedTokens: promptTokens > baseTokens ? promptTokens : baseTokens,
@@ -282,7 +293,12 @@ export async function snapshotFromAgentEnd(
   ctx: PluginHookAgentContext,
   event: PluginHookAgentEndEvent,
   base: ContextBaseOverhead,
+  correction?: number,
 ): Promise<ContextUsageSnapshot> {
   const messages = Array.isArray(event.messages) ? event.messages : [];
-  return makeContextUsageSnapshot(ctx, messages.length ? messages : undefined, base);
+  const snap = await makeContextUsageSnapshot(ctx, messages.length ? messages : undefined, base);
+  // 【过早触发修复】统一校正：agent_end 快照与 before_prompt_build 同口径，避免未校正大值覆盖校正值导致过早触发。
+  const f = typeof correction === "number" && correction > 0 && correction < 1 ? correction : 1;
+  if (f < 1 && snap.usedTokens > 0) snap.usedTokens = Math.round(snap.usedTokens * f);
+  return snap;
 }

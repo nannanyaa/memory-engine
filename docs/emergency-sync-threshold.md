@@ -1,12 +1,18 @@
 # Design: `emergencySyncThreshold` — 紧急同步压缩兜底
 
 > 状态：**Planned**（已定稿接口/行为，待实现）
-> 提案来源：外部开发者评审反馈（"压缩跟不上时 1M 上下文也会爆"）
-> 关联：`compaction.lengthThreshold` / `runtime.contextUsage`
+> 提案来源：外部开发者评审反馈（"压缩跟不上时 1M 上下文也会爆"）+ 项目方实测确认必要性
+> 关联：`compaction.lengthThreshold` / `runtime.contextUsage` / `runtimeContext.tokenBudget`（模型窗口自动跟随）
 
 ## 问题
 
 memory-engine 的压缩是**尽力而为的后台异步任务**。正常情况下它追得上生产速度，但在极端场景——用户刷屏式连续发送、或一次 run 里要压缩的旧话题特别多——后台压缩可能追不上消息增长，导致上下文占比持续爬升，逼近模型窗口上限。此时不能让上下文爆掉。
+
+## 已实测的前提（2026-08-11 真实环境验证）
+
+memory-engine 接管 contextEngine 后声明 `ownsCompaction: true`，OpenClaw 系统会**跳过自己的预占式压缩兕底**（`selection.js` 中 `context-overflow-precheck skipped: context engine owns compaction`）。因此 memory-engine 必须自己扛起超预算兕底责任。
+
+同时已实测确认：**压缩判据分母 `runtimeContext.tokenBudget` 随当前活动模型自动变化**（DeepSeek 1M → 900000；临时调 MIMO 800k → 720000），即大→小模型切换时分母自动变小，压缩阈值自动提前——**不会因模型切换而爆上下文**（无需手动改配置）。emergencySyncThreshold 在此基础上提供**最后的同步保命兜底**。
 
 ## 目标
 
@@ -18,9 +24,9 @@ memory-engine 的压缩是**尽力而为的后台异步任务**。正常情况�
 
 | 字段 | 类型 | 默认 | 含义 |
 | --- | --- | --- | --- |
-| `emergencySyncThreshold` | float | `0`（默认关） | 上下文占比 ≥ 此值（如 0.90）时，触发一次**同步强制压缩**。`0` = 不启用本兜底。 |
+| `emergencySyncThreshold` | float | `0.50`（默认**开**） | 上下文占比 ≥ 此值时，触发一次**同步强制压缩**。**默认 0.50、不可更大**（50% 已足够保护，更大则触发放过晚）。`0` 可显式关闭。 |
 
-预设建议值：预设 A（标准）`0.90`、预设 B（低资源）`0.85`（低资源压缩更慢、更早兜底）、预设 C（最小可用）不启用。
+预设建议值：预设 A（标准）`0.50`、预设 B（低资源）`0.50`（低资源压缩更慢，也可视情况 `0.40` 更早兕底）、预设 C（最小可用）不启用（`0`，因为不开压缩模块）。
 
 ## 触发时机
 

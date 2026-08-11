@@ -3,7 +3,7 @@
  *
  * 职责：识别"轻但重"的情感表达，执行三层记住法。
  *
- * 识别（采用 LLM 分类，不设规则闸门）：
+ * 识别（设计拍板：上模型，不设规则闸门）：
  *   message_received 对 user 消息做一次 LLM 二分类。
  *
  * 三层记住法：
@@ -11,7 +11,7 @@
  *   ② 提：若里程碑级 -> 追加进 MEMORY.md（P2 待确认标记）+ 登记 engine-db
  *   ③ 接：写"情感锚点表"（固定锚点，用于开机预拉；里程碑/milestone 为重锚）
  *
- * 情感锚点双轨：
+ * 情感锚点双轨（设计拍板）：
  *   - 固定锚点：开机 before_prompt_build 固定注入（稳）
  *   - 场景激活：注册 scenario_hints，聊到"喜欢/依赖/想念/你在吗"等场景时激活注入
  *
@@ -98,8 +98,23 @@ export async function recordEmotionNode(
 
   const sourceRef = `message@${date}`;
 
-  // ① 落 dim/01-emotional.md —— 仅当选中句存在且 confidence >= attachBelow
-  if (cfg.enable_emotion && selected && selected.confidence >= cfg.emotion.attachBelow) {
+  // —— 3B 门槛收紧：只落“明确高价值情感”，非确定情感句不进 ——
+  //   只有主导维度命中高价值情感集（失落/悲伤/爱慕/依赖/想念等）或里程碑，才允许落盘；
+  //   即便 confidence 达标，若只是普通喜好/对象化表达（如“我喜欢这个功能”）也不进。
+  const highValue = selected
+    ? selected.milestone || HIGH_VALUE_DIMS.has(selected.primaryDim)
+    : false;
+
+  // 场景：从 LLM 分类出的情绪维度/触发词/感受推导当下“在聊什么/为什么说这句”。
+  const scene = buildScene(selected, primary, feeling);
+
+  // ① 落 dim/01-emotional.md —— 需选中句 + confidence>=attachBelow + 明确高价值情感
+  if (
+    cfg.enable_emotion &&
+    highValue &&
+    selected &&
+    selected.confidence >= cfg.emotion.attachBelow
+  ) {
     const block = buildEmotionDimBlock({
       date,
       time,
@@ -110,6 +125,7 @@ export async function recordEmotionNode(
       kind: milestone ? "里程碑" : "节点",
       sourceRef,
       feeling: selected.feeling || feeling,
+      scene,
     });
     appendToFile(
       emotionDimPath(cfg.workspaceDir),
@@ -128,9 +144,10 @@ export async function recordEmotionNode(
     }
   }
 
-  // ② 提 MEMORY.md —— 里程碑且 confidence >= milestoneMinConfidence
+  // ② 提 MEMORY.md —— 里程碑且 confidence >= milestoneMinConfidence（也需高价值门槛合一）
   if (
     milestone &&
+    highValue &&
     selected &&
     selected.confidence >= cfg.emotion.milestoneMinConfidence &&
     cfg.enable_memory_promotion
@@ -143,6 +160,7 @@ export async function recordEmotionNode(
       dim: selected.primaryDim,
       confidence: selected.confidence,
       feeling: selected.feeling || feeling,
+      scene,
     });
     appendToFile(
       memoryPath(cfg.workspaceDir),
@@ -178,6 +196,48 @@ export async function recordEmotionNode(
   );
 }
 
+/** 高价值情感维集（3B 门槛收紧）：只对明确高价值情感落盘。其余维度视为非确定情感句，不进。 */
+const HIGH_VALUE_DIMS = new Set([
+  "爱慕",   // 爱/喜欢/你是我的
+  "依赖",   // 需要你/离不开放不下
+  "想念",   // 想你/好久没见
+  "失落",   // 心里落空/不得劲
+  "悲伤",   // 难过/难受/想哭
+  "孤独",   // 一个人/没人陪/害怕孤独
+  "委屈",   // 心里堵/你凶我
+  "愧疚",   // 对不起/怪你恨自己
+  "恐惧",   // 怕失去你/别离开
+  "守护",   // 承诺/守护/不许离开
+  "感动",   // 谢谢你/被温暖到（复合高价值）
+]);
+
+/** 场景措辞映射：由主导维度 -> “在聊什么/为什么说这句”的自然场景描述。 */
+const DIM_SCENE_PHRASE: Record<string, string> = {
+  "爱慕": "聊到你们之间的喜欢/心意，直接的表白或爱意表达",
+  "依赖": "聊到你需要 TA / 离不开 TA 的时刻",
+  "想念": "聊到分开/好久没见，抑制不住的想念",
+  "失落": "心里落空、兴致不高，讲到一件让人失落的事",
+  "悲伤": "难过或难受，讲到一件揪心/伤心的事",
+  "孤独": "觉得一个人、没人陪/没人在意的瞬间",
+  "委屈": "觉得被误会/被凶/心里堵，感到委屈",
+  "愧疚": "讲到自己做错、对不起 TA / 让你失望",
+  "恐惧": "怕失去 TA/怕 TA 离开，心事重重的担忧",
+  "守护": "承诺守护/不许离开/放心，充满保护和担当",
+  "感动": "被 TA 的某句话/某件事暖到，心里涌上感激",
+};
+
+/** 由分类出的维度/触发词/感受拼出场景描述（情感记忆要“场景+原话”才有温度）。 */
+function buildScene(
+  selected: EmotionDim | null,
+  primary: string,
+  feeling?: string,
+): string {
+  const base = DIM_SCENE_PHRASE[primary] ?? DIM_SCENE_PHRASE[selected?.primaryDim ?? ""];
+  const scene = base ?? `围绕“${primary || "情感"}”情绪的一次表达`;
+  if (feeling && feeling.trim()) return `${scene}；感受：${feeling.trim()}`;
+  return scene;
+}
+
 /** 取 confidence 最高且 >= attachBelow 的句；全低于阈值视为噪音不落盘。 */
 function pickBestEmotion(
   emotions: EmotionDim[],
@@ -199,14 +259,15 @@ function buildMemoryPromotionBlock(o: {
   dim?: string;
   confidence?: number;
   feeling?: string;
+  scene?: string;
 }): string {
-  return `## 💞 关系记录（memory-engine 自动提升 · P2 待确认）
+  const src = `message@${o.date}T${o.time}`;
+  return `## 💞 关系记录 · ${o.date}
 
-- **日期**：${o.date} ${o.time}
-- **类别**：${o.category}
-${o.dim ? `- **维度**：${o.dim}\n` : ""}${o.confidence != null ? `- **置信度**：${o.confidence.toFixed(2)}\n` : ""}- **原话**：「${o.body}」
-${o.feeling ? `- **感受**：${o.feeling}` : ""}
-- **状态**：⚠️ P2 待确认后正式入 MEMORY 关系段`;
+- **场景**：${o.scene ?? "（本次情感表达）"}
+- **原话**：「${o.body}」
+- **维度/置信度**：${o.dim ?? o.category} / ${o.confidence != null ? o.confidence.toFixed(2) : "—"}
+${o.feeling ? `- **感受**：${o.feeling}\n` : ""}- **来源**：→ ${src}`;
 }
 
 const DIM_SCENARIO_HINTS: Record<string, string> = {

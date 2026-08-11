@@ -20,7 +20,7 @@ import type {
   PluginHookGatewayContext,
 } from "openclaw/plugin-sdk/plugin-runtime";
 import type { Logger } from "./log.js";
-import { initRuntime, resetRuntime, getRuntime, updateContextUsage } from "./runtime.js";
+import { initRuntime, resetRuntime, getRuntime, updateContextUsage, touchActive } from "./runtime.js";
 import { isModuleEnabled } from "./config.js";
 import { onMessageReceived } from "./modules/emotion.js";
 import { onAgentEnd } from "./modules/memory.js";
@@ -36,7 +36,6 @@ import { registerContextEngineIfEnabled } from "./modules/context-engine.js";
 import { registerTools } from "./tools.js";
 import {
   snapshotFromBeforePromptBuild,
-  snapshotFromAgentEnd,
 } from "./modules/context-tokens.js";
 
 export function registerHooks(api: OpenClawPluginApi, log: Logger): void {
@@ -116,8 +115,10 @@ export function registerHooks(api: OpenClawPluginApi, log: Logger): void {
     async (event, ctx) => {
       const rt = getRuntime();
       if (!rt) return;
-      // 真实上下文用量快照（分子=基底+工具+会话消息估算，分母=官方预算）——压缩判据主数据源，不依赖 lcm.db
-      updateContextUsage(await snapshotFromAgentEnd(ctx, event, rt.contextBase));
+      //【方案A·快照一致性】before_prompt_build 是 usedTokens 唯一权威写入源。
+      // agent_end 若也用 snapshot 覆盖，会与 before_prompt_build(完整prompt校正)基准不同 → usedTokens 跳变(20↔47)。
+      // 这里 agent_end 只刷新会话活跃时间戳（供 P0 守卫），不覆盖权威快照。
+      touchActive();
       if (!isModuleEnabled(rt.cfg, "enable_context_compaction")) return;
       if (!rt.engineDb) return;
       // 首次触达：按 ctx 真实 session key 回填历史
@@ -160,7 +161,7 @@ export function registerHooks(api: OpenClawPluginApi, log: Logger): void {
       const rt = getRuntime();
       if (!rt) return;
       // 真实上下文用量快照（优先级最高：基底+本次 run 装配的 messages + 官方预算）
-      updateContextUsage(await snapshotFromBeforePromptBuild(ctx, event, rt.contextBase));
+      updateContextUsage(await snapshotFromBeforePromptBuild(ctx, event, rt.contextBase, rt.cfg.compaction.promptEstimateCorrection));
       if (!isModuleEnabled(rt.cfg, "enable_recall")) return;
       if (!rt.engineDb) return;
       return await onBeforePromptBuild(rt, event, ctx);
@@ -243,7 +244,7 @@ function startIntervalFallback(rt: import("./runtime.js").RuntimeContext): void 
   const maybeDigest = async () => {
     const r = getRuntime();
     if (!r) return;
-    // 每 6h 检查一次今日落盘（兜底）；未落盘则全自动生成摘要草稿（全自动）
+    // 每 6h 检查一次今日落盘（兜底）；未落盘则全自动生成摘要草稿（全自动拍板）
     if (isModuleEnabled(r.cfg, "enable_daily_digest")) {
       try {
         await ensureDailyPersist(r);

@@ -123,7 +123,7 @@ export async function ensureDailyPersist(rt: RuntimeContext): Promise<{
   );
   if (!res.ok) return { status: "write_failed", file, note: res.error };
 
-  // 自动登记 index（全自动）
+  // 自动登记 index（走全自动）
   await registerDailyIndex(rt, file, draft);
   rt.log.info(`[daily] auto-generated draft -> ${file}`);
   return { status: "auto_generated_draft", file };

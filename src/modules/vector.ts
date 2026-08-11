@@ -1,7 +1,7 @@
 /**
  * vector.ts — 语义向量检索（模块：enable_semantic_vector；需要 enable_recall 联动）
  *
- * 语义向量（云 embedding），解决"关键词不匹配导致漏匹配"硬伤。
+ * 设计定 #2：语义向量必上（云 embedding），解决"关键词不匹配导致漏匹配"硬伤。
  *
  * 设计：
  *   - 云端 embedding API（OpenAI 兼容），端点/模型/key 全部可配置。

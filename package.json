@@ -1,6 +1,6 @@
 {
   "name": "@openclaw-plugins/memory-engine",
-  "version": "0.1.0-beta.1",
+  "version": "0.2.0-beta.1",
   "description": "OpenClaw 通用记忆决策引擎插件（纯 hook，独立 enable_* 开关，逐个开测）",
   "type": "module",
   "main": "dist/index.js",

@@ -1,7 +1,7 @@
 /**
  * compaction.ts — 事件感知上下文压缩引擎（模块：enable_context_compaction，默认关）
  *
- * 压缩算法（B 方向）：
+ * 设计定算法（B 方向）：
  *   主判据从前端轮余弦升级为「前段平均相似度 avgSim」：
  *     新轮 与 前段最近 K 轮 的平均余弦 avgSim；
  *     relevanceThreshold 作衬底（avgSim>=此值=明确同事件，绝不压）；
@@ -16,7 +16,7 @@
  *
  * 触发：
  *   - 主触发：话题切换（事件完成）
- *   - 次触发：上下文长度阈值兜底（lengthThreshold，默认 0.22）
+ *   - 次触发：上下文长度阈值兜底（lengthThreshold，设计定 0.22）
  *     注（2026-08-09 修）：此前次触发只统计压缩窗口内字符，受 windowSize 上限约束对长会话永不达标，
  *     属死配置。已改为主路径 maybeCompressByRealLength —— 读 lcm 活跃会话实测 totalTokens，
  *     以「真实上下文 token / contextTokenBudget >= lengthThreshold」触发，真正按上下文长度收拢。
@@ -291,7 +291,7 @@ function markCompressed(
 }
 
 // ---------------------------------------------------------------------------
-// 补1：超长输入的分段压缩再拼接（设计明确）
+// 补1：超长输入的分段压缩再拼接（明确要求）
 // ---------------------------------------------------------------------------
 
 /**
@@ -785,7 +785,7 @@ function maybeCompressByLength(
  *   长会话下窗口仅数百 token，除以 920k 的 contextTokenBudget 永远远小于 0.22 => 永不触发。
  *   改为读取真实会话上下文用量后，本路径成为真正按“上下文长度”生效的主诉据。
  *
- * 根因修复（上下文用量判据）：
+ * 2026-08-09 根因修复（深挖）：
  *   旧 usedTokens 主来源是 rt.lcm.getActiveConversation(sessionKey).totalTokens（读 lossless 的 lcm.db）。
  *   “完整卸载 lossless”后 lcm.db 被删 → rt.lcm=null → usedTokens=0 → 退化窗口字符估算(≈0.03%) →
  *   0.22 永不触发（判据“瞎了”）。
@@ -795,7 +795,7 @@ function maybeCompressByLength(
  *     - 分母 budget      = ctx.contextTokenBudget（官方解析预算，与 web 面板那个百分比同源）。
  *   优先级：1) rt.contextUsage  >  2) lcm 会话实测（仍保留，lossless 在时可交叉校验）  >  3) 窗口字符估算（最后兜底）。
  *
- * 语义：压掉最老段、保留 recentWindowForInternal 轮。
+ * 语义（设计定）：压掉最老段、保留 recentWindowForInternal 轮。
  */
 export function maybeCompressByRealLength(
   rt: RuntimeContext,
@@ -926,7 +926,7 @@ export async function forceCompress(
 }
 
 // ---------------------------------------------------------------------------
-// 启动回填：从现有会话历史初始化压缩窗口（一旦加载即能按现有上下文检测/触发压缩）
+// 启动回填：从现有会话历史初始化压缩窗口（设计定：一旦加载即能按现有上下文检测/触发压缩）
 // ---------------------------------------------------------------------------
 
 // 已回填过的 session 标记（进程内）。回填幂等：只在首次触达时重建窗口，

@@ -34,6 +34,8 @@ export interface RuntimeContext {
   contextUsage: ContextUsageSnapshot;
   /** 系统提示基底（gateway_start 实测 workspace 上下文文件）+ 工具 schema 固定开销。 */
   contextBase: ContextBaseOverhead;
+  /** 【P0修复-会话活跃守卫】最近一次真实 run/工具调用的时间戳(ms)。maintain 重写 transcript 前据此判断当前是否活跃；活跃(距现在过近)则跳过重写，等会话闲置再压，避免撞上工具调用导致 missing tool result。 */
+  lastActiveTs: number;
 }
 
 /** 默认 snapshot：无任何数据时 budget=0/usedTokens=0（判据端降级，不误触发）。 */
@@ -59,6 +61,7 @@ export function initRuntime(
     stateDir: env.stateDir,
     workspaceDir: env.workspaceDir,
     contextUsage: { ...EMPTY_CONTEXT_USAGE },
+    lastActiveTs: 0,
     contextBase: { ...EMPTY_CONTEXT_BASE },
   };
   // 独立 engine-db：任何模块启用时都需要（记忆引擎/情感/自进化/兜底都写它）
@@ -127,6 +130,20 @@ export function updateContextUsage(snap: ContextUsageSnapshot): void {
     baseTokens: snap.baseTokens || prev?.baseTokens || 0,
     ts: snap.ts || Date.now(),
   };
+  //【P0修复-会话活跃守卫】每次 run 快照更新 = 会话正在活跃，刷新最后活跃时间戳
+  rt.lastActiveTs = Date.now();
+}
+
+/**
+ * 【快照一致性·方案A】只刷新会话活跃时间戳，不覆盖 contextUsage 快照。
+ * before_prompt_build 是 usedTokens 的唯一权威写入源；agent_end 若也用 snapshot 覆盖，
+ * 会与 before_prompt_build(完整prompt校正) 的基准不同，导致 usedTokens 在 run 之间跳变
+ * (20%↔47% 乱跳的根因)。agent_end 只标记活跃，不碰权威快照，保证 compression 判据稳定。
+ */
+export function touchActive(): void {
+  const rt = current;
+  if (!rt) return;
+  rt.lastActiveTs = Date.now();
 }
 
 /** 便捷：取配置（未初始化时返回 v0 默认全关，安全 no-op）。 */
