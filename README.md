@@ -48,6 +48,16 @@
 - 因此：Web 控制台「已用 / 预算」显示的占比，与 README/配置表里写的 `lengthThreshold`（`0.20`）等**不一定严格一一对应**——面板按当前会话实际预算显示，插件按运行时预算判据触发。这是**设计使然，不是 bug**。
 - 若你发现"面板显示 20% 却不压缩 / 13% 却压缩"，属正常：判据与显示口径不同；以运行时实际生效的预算为准。
 
+**为什么会不一致（计算方式差异）**
+
+| | Web 面板显示 | 插件触发判据 |
+| --- | --- | --- |
+| **分子** | 当前会话运行时实际 token 用量（OpenClaw 实时上报） | 插件**估算**用量 = 系统提示基底（AGENTS/SOUL/...） + 工具 schema 固定开销 + 会话消息估算 |
+| **分母** | OpenClaw 运行时解析的官方上下文预算（如 1M×0.9≈900k） | 优先 `ctx.contextTokenBudget`（官方预算）；取出失败才回落 `contextTokenBudget` 配置（默认 `920000`） |
+| **触发条件** | 只显示，不参与触发 | `估算用量 / 生效预算 ≥ lengthThreshold` 时压缩 |
+
+两个环节独立：**面板只负责展示，插件只管触发**。分子是"实时实测 vs 插件估算"两套算法，分母也可能因"官方预算 vs 配置里兜底"不同——所以两边算出的占比天然有偏差。你观察到的"面板 20% 不压 / 13% 却压"就是这个原因，不是插件坏了。要以**插件生效的预算 + 真实触发行为**为准，面板数字仅作参考。
+
 ---
 
 ## 1. 这是什么（30 秒定位）
@@ -175,7 +185,7 @@ npm run typecheck    # tsc --noEmit（需要本地装 openclaw SDK 类型）
 ### 5.7 定时落盘
 | 字段 | 类型 | 默认 | 含义 |
 | --- | --- | --- | --- |
-| `dailyDigestCron` | string | `50 23 * * *` | 每日落盘兜底 cron。 |
+| `dailyDigestCron` | string | `50 23 * * *` | 每日落盘兜底 cron。**按你的作息调**——想在当天结束时落盘就用默认；想睡前一小时落盘（如 `0 0 * * *`）或凌晨落盘都可改。 |
 
 ### 5.8 上下文压缩（`compaction`）—— 算法决策核心区
 | 字段 | 类型 | 默认 | 含义 / 决策理由 |
@@ -187,8 +197,8 @@ npm run typecheck    # tsc --noEmit（需要本地装 openclaw SDK 类型）
 | `recentWindowForInternal` | int | `5` | avgSim 取最近几轮；兼作内部相关软信号窗口。 |
 | `internalRelevanceThreshold` | float | `0.35` | 近轮内部相关软信号：**判别力弱、不作硬门槛**，仅辅助防哑火。 |
 | `minSamples` | int | `5` | 切换判定所需最小样本数，不足不触发。 |
-| `lengthThreshold` | float | `0.20` | **长度兜底触发线**：上下文已用占比 >= 此值才压缩。**核心决策：判据用"真实上下文占比"，不是压缩窗口字符**——否则长会话算出来永远不触发。 |
-| `contextTokenBudget` | int | `920000` | 上下文 token 预算，作长度判据分母；运行时优先采用 OpenClaw 官方解析预算。 |
+| `lengthThreshold` | float | `0.20` | **长度兜底触发线**：上下文已用占比 ≥ 此值才压缩。**按自己习惯调**——想让压缩更激进（更早瘦身）就调低（如 `0.15`），想更保守（尽量少压缩）就调高（如 `0.25`）。**核心决策：判据用"真实上下文占比"，不是压缩窗口字符**——否则长会话算出来永远不触发。 |
+| `contextTokenBudget` | int | `920000` | 上下文 token 预算，作长度判据分母；**按你模型的真实上下文窗口调**（如 DeepSeek 1M 窗口配 `900000`、更小窗口相应调低）。运行时优先采用 OpenClaw 官方解析预算，此处为兜底默认。 |
 | `contextToolOverheadTokens` | int | `45000` | 工具 schema 固定 token 开销（补足"系统提示+工具"基底）。0=关闭。需按真实工具集调校。 |
 | `backfillWindowSize` | int | `40` | **回填窗口**：启动时从现有会话历史灌入最近 40 轮。**不放回填会"永远从插件加载后第一条消息才开始计数"**，导致已超阈值也不压缩。 |
 | `backfillSessionKey` | string | `agent:main:main` | 回填目标会话键（=你的主会话键）。空则跳过回填。 |
@@ -198,10 +208,10 @@ npm run typecheck    # tsc --noEmit（需要本地装 openclaw SDK 类型）
 | `maxSegmentsPerArchive` | int | `45` | 单次归档最多切几段，超限强制收束，**防恶意超长会话无限次调用 LLM**。 |
 | `maxQueue` | int | `100` | 后台压缩队列上限，满则丢弃最旧（可被后续触发重拾）。 |
 | `maxCompactionsPerMinute` | int | `6` | 60s 内最多触发几次压缩，防挤爆 CPU/LLM。 |
-| `memoryHighWaterMB` | int | `512` | heapUsed 高水位，超则暂停等内存释放。0=不启用。 |
+| `memoryHighWaterMB` | int | `512` | heapUsed 高水位，超则暂停等内存释放。**按你的内存余量调**：内存紧张可调低（更早降载，如 `256`），机子宽裕可调高或 `0`（关闭护栏，不推荐）。 |
 | `memoryPollMs` | int | `5000` | 高水位轮询等待间隔。 |
-| `summarizeRatioThreshold` | float | `0.30` | assemble 摘要替换触发占比（=messages 估算 token / 预算）。 |
-| `summarizeTargetRatio` | float | `0.15` | **落点**：超触发线后压回到此占比（锯齿形：触发→回落）。 |
+| `summarizeRatioThreshold` | float | `0.30` | assemble 摘要替换触发占比（=messages 估算 token / 预算）。**想更早折叠旧消息就调低**（如 `0.25`），想多保留原文上下文就调高。 |
+| `summarizeTargetRatio` | float | `0.15` | **落点**：超触发线后压回到此占比（锯齿形：触发→回落）。**想压得更狠就调低**（如 `0.10`），想多留上下文就调高（如 `0.20`）。 |
 | `summarizeMinOldMessages` | int | `6` | 一次替换至少折叠几条最老消息。 |
 | `summarizeMaxChars` | int | `1500` | 单条合成摘要块文本上限，防摘要写爆。 |
 

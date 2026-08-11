@@ -48,6 +48,16 @@ In other words: **users who never installed lossless can install and use it imme
 - So the "used / budget" ratio shown in the Web console does **not** always map 1:1 to `lengthThreshold` (`0.20`), etc. in the README/config table — the panel shows the current session's actual budget, while the plugin triggers on the runtime budget. This is **by design, not a bug**.
 - If you see "panel shows 20% but no compaction" or "13% yet compaction happens", this is normal: the trigger and display use different bases; rely on the actual runtime budget.
 
+**Why they diverge (different calculation methods)**
+
+| | Web panel display | Plugin trigger |
+| --- | --- | --- |
+| **Numerator** | current session real-time actual token usage (reported live by OpenClaw) | plugin **estimated** usage = system-prompt base (AGENTS/SOUL/...) + tool-schema fixed overhead + conversation-message estimate |
+| **Denominator** | official context budget parsed by OpenClaw at runtime (e.g. 1M×0.9≈900k) | prefers `ctx.contextTokenBudget` (official budget); only falls back to the `contextTokenBudget` config (default `920000`) if that is unavailable |
+| **Trigger** | display only, no trigger | compacts when `estimate / effective-budget ≥ lengthThreshold` |
+
+The two are independent: **the panel only displays, the plugin only triggers.** The numerator is two different algorithms ("live measured" vs "plugin estimate"), and the denominator can also differ ("official budget" vs "config fallback") — so the two ratios naturally diverge. What you observe as "panel 20% but no compaction / 13% yet compaction" is exactly this; it is not the plugin being broken. Trust the **effective budget + real trigger behavior**; the panel number is only a reference.
+
 ---
 
 ## 1. What Is This (30-second overview)
@@ -175,7 +185,7 @@ See the quick-reference in §3. Switches combine freely; coupling constraints ar
 ### 5.7 Scheduled digest
 | Field | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `dailyDigestCron` | string | `50 23 * * *` | Daily digest fallback cron. |
+| `dailyDigestCron` | string | `50 23 * * *` | Daily digest fallback cron. **Set to your schedule** — keep the default to persist at end-of-day, or change to e.g. `0 0 * * *` (an hour before sleep) or overnight. |
 
 ### 5.8 Context compaction (`compaction`) — the algorithm decision core
 | Field | Type | Default | Meaning / rationale |
@@ -187,8 +197,8 @@ See the quick-reference in §3. Switches combine freely; coupling constraints ar
 | `recentWindowForInternal` | int | `5` | How many recent turns avgSim uses; also the internal soft-signal window. |
 | `internalRelevanceThreshold` | float | `0.35` | Recent internal relevance soft signal: **weak discriminator, not a hard gate**, only helps avoid under-firing. |
 | `minSamples` | int | `5` | Minimum samples required before a switch decision; below this, no trigger. |
-| `lengthThreshold` | float | `0.20` | **Length fallback trigger**: compact when context usage ≥ this ratio. **Core decision: use "real context ratio", not compaction-window chars** — otherwise long sessions never trigger. |
-| `contextTokenBudget` | int | `920000` | Context token budget, denominator for the length check; at runtime prefers OpenClaw's official parsed budget. |
+| `lengthThreshold` | float | `0.20` | **Length fallback trigger**: compact when context usage ≥ this ratio. **Tune to your habit** — lower (e.g. `0.15`) to compact more aggressively / slim earlier; raise (e.g. `0.25`) to compact less often. **Core decision: use "real context ratio", not compaction-window chars** — otherwise long sessions never trigger. |
+| `contextTokenBudget` | int | `920000` | Context token budget, denominator for the length check; **set to your model's real context window** (e.g. `900000` for a 1M-window model, lower for smaller windows). At runtime prefers OpenClaw's official parsed budget; this is the fallback default. |
 | `contextToolOverheadTokens` | int | `45000` | Fixed tool-schema token overhead (to complete "system prompt + tools" base). 0 = off. Tune to your real toolset. |
 | `backfillWindowSize` | int | `40` | **Backfill window**: on start, load the recent 40 turns from existing session history. **Without backfill it would "start counting only from the first message after plugin load"**, so an already-over-threshold context would never compact. |
 | `backfillSessionKey` | string | `agent:main:main` | Target session key to backfill (= your main session key). Empty = skip backfill. |
@@ -198,10 +208,10 @@ See the quick-reference in §3. Switches combine freely; coupling constraints ar
 | `maxSegmentsPerArchive` | int | `45` | Max segments per archive pass; forces closure if exceeded, **protects against maliciously long sessions spamming the LLM**. |
 | `maxQueue` | int | `100` | Background compaction queue cap; if full, drops the oldest (can be re-picked up by a later trigger). |
 | `maxCompactionsPerMinute` | int | `6` | Max compactions per 60s, to avoid slamming CPU/LLM. |
-| `memoryHighWaterMB` | int | `512` | heapUsed high-water mark; pauses while over, waiting for memory to free. 0 = off. |
+| `memoryHighWaterMB` | int | `512` | heapUsed high-water mark; pauses while over, waiting for memory to free. **Tune to your memory headroom**: lower (e.g. `256`) if tight (load-shed earlier), raise or set `0` if roomy (disable guard, not recommended). |
 | `memoryPollMs` | int | `5000` | High-water polling interval. |
-| `summarizeRatioThreshold` | float | `0.30` | Assemble-summarize trigger ratio (= estimated message tokens / budget). |
-| `summarizeTargetRatio` | float | `0.15` | **Landing point**: after the trigger, compress back to this ratio (sawtooth: trigger → settle). |
+| `summarizeRatioThreshold` | float | `0.30` | Assemble-summarize trigger ratio (= estimated message tokens / budget). **Lower (e.g. `0.25`) to fold old messages sooner**; raise to keep more original context. |
+| `summarizeTargetRatio` | float | `0.15` | **Landing point**: after the trigger, compress back to this ratio (sawtooth: trigger → settle). **Lower (e.g. `0.10`) to squeeze harder**; raise (e.g. `0.20`) to keep more context. |
 | `summarizeMinOldMessages` | int | `6` | Minimum oldest messages to fold in one replacement. |
 | `summarizeMaxChars` | int | `1500` | Max chars of a single synthesized summary block, to avoid over-blowing it. |
 
