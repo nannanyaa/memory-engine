@@ -188,6 +188,9 @@ npm run typecheck    # tsc --noEmit（需要本地装 openclaw SDK 类型）
 | `dailyDigestCron` | string | `50 23 * * *` | 每日落盘兜底 cron。**按你的作息调**——想在当天结束时落盘就用默认；想睡前一小时落盘（如 `0 0 * * *`）或凌晨落盘都可改。 |
 
 ### 5.8 上下文压缩（`compaction`）—— 算法决策核心区
+
+> **💡 基准前提**：本节的推荐值（`contextTokenBudget: 920000`、`lengthThreshold: 0.20`、`summarizeRatioThreshold: 0.30`、`summarizeTargetRatio: 0.15` 等）是为**大上下文窗口（如 1M）模型**标定的。若你用**小窗口模型**（如 128k / 64k），请**按比例调整 `contextTokenBudget`**（如 128k 窗口建议配 `~115200`，即 128k×0.9），并据实际触发行为微调各阈值——直接套用 1M 的推荐值会导致小窗口下触发过晚/比例失真。
+
 | 字段 | 类型 | 默认 | 含义 / 决策理由 |
 | --- | --- | --- | --- |
 | `windowSize` | int | `10` | 相关性打分滑动窗口（前 N 轮）。 |
