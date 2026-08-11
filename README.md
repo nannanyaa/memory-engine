@@ -101,6 +101,22 @@
 
 ---
 
+## 3.5 上手建议（新用户按这个顺序来）
+
+不建议一次全开。**分级采用**，每开一层观察几天再往上加：
+
+| 阶段 | 建议开启 | 目的 | 风险 |
+| --- | --- | --- | --- |
+| **① 尝鲜（低风险）** | `enable_recall` + `enable_memory_promotion` | 先体验"自动想得起该想的" + "高投入沉淀进长期记忆" | 低，只读/追加写入，易回退 |
+| **② 情感增强** | 再开 `enable_emotion` | 让 agent 记住"轻但重要"的情感表达（三层记住法） | 低-中，需配 LLM |
+| **③ 压缩** | 再开 `enable_context_compaction`（可选叠 `enable_context_summarize`） | 长会话上下文自动瘦身不丢信息 | 中，参数调校成本高；**先想清楚自己有 lossless 吗**，避免跟它双重压缩 |
+| **④ 语义检索** | 最后开 `enable_semantic_vector` | `mem_find` 升级为语义检索 | 中，最吃内存（LanceDB），需配 embedding |
+| **⑤ 高频** | `enable_daily_digest` / `enable_self_evolve` | 落盘兜底 / 夜间复盘提案 | 中-高，自进化夜间跑 LLM，先观察提案质量 |
+
+**想稳妥**：先只开 `enable_recall` + `enable_memory_promotion` 跑几天，确认无副作用再逐层往上加。**压缩与自进化模块**建议等摸清行为后再开。
+
+---
+
 ## 4. 安装 / 接入方法（通用表述，不绑定任何特定环境）
 
 ```bash

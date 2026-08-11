@@ -101,6 +101,22 @@ All switches default **`false`**. The corresponding hook/tool is registered only
 
 ---
 
+## 3.5 Getting Started (new users: follow this order)
+
+Don't enable everything at once. **Adopt in stages**, observe each tier for a few days before adding more:
+
+| Stage | Enables | Purpose | Risk |
+| --- | --- | --- | --- |
+| **① Try it (low risk)** | `enable_recall` + `enable_memory_promotion` | Feel "recalls what it should" + "high-engagement settles into long-term memory" | Low; read/append writes, easy to roll back |
+| **② Emotion** | then `enable_emotion` | Let the agent remember "light but important" emotional expressions (3-layer remembering) | Low-mid; needs an LLM |
+| **③ Compaction** | then `enable_context_compaction` (optionally stack `enable_context_summarize`) | Slim long sessions without losing info | Mid; higher tuning cost; **decide whether you run lossless first** to avoid double-compaction |
+| **④ Semantic retrieval** | last `enable_semantic_vector` | Upgrade `mem_find` to semantic | Mid; heaviest on memory (LanceDB); needs embedding |
+| **⑤ Frequent jobs** | `enable_daily_digest` / `enable_self_evolve` | digest fallback / nightly proposals | Mid-high; self-evolution runs LLM overnight, watch proposal quality |
+
+**To be safe**: start with only `enable_recall` + `enable_memory_promotion`, run a few days, confirm no side effects, then add layers. Leave compaction & self-evolution until you understand their behavior.
+
+---
+
 ## 4. Installation / Integration
 
 ```bash
