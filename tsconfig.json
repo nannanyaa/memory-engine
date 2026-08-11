@@ -1,0 +1,30 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2023"],
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "outDir": "dist",
+    "rootDir": ".",
+    "resolveJsonModule": true,
+    "noEmit": true,
+    "types": ["node"],
+    "typeRoots": [
+      "./node_modules/@types"
+    ],
+    "paths": {
+      "openclaw/*": [
+        "node_modules/openclaw/dist/*"
+      ],
+      "typebox": [
+        "node_modules/typebox/build/index.d.mts"
+      ]
+    },
+    "baseUrl": "."
+  },
+  "include": ["index.ts", "src/**/*.ts", "src/**/*.d.ts"],
+  "exclude": ["node_modules", "dist"]
+}

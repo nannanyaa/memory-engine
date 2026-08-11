@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+
+# Build artifacts already produced (dist/ is shipped, but ignore stray/backup bundles)
+dist.bak*/
+src.bak*/
+rollback_*/
+
+# Backup / scratch files
+*.bak*
+*.gov_bak*
+*~
+*.swp
+
+# Runtime databases (created from live state, must not be committed)
+memory-engine.db
+lcm.db
+*.db-wal
+*.db-shm
+
+# OS / editor
+.DS_Store
+*.log
+
+# Local config / secrets
+.env
+.env.*

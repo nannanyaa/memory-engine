@@ -1,0 +1,56 @@
+{
+  "name": "@openclaw-plugins/memory-engine",
+  "version": "0.1.0-beta.1",
+  "description": "OpenClaw 通用记忆决策引擎插件（纯 hook，独立 enable_* 开关，逐个开测）",
+  "type": "module",
+  "main": "dist/index.js",
+  "license": "MIT",
+  "keywords": [
+    "openclaw",
+    "openclaw-plugin",
+    "memory",
+    "emotion",
+    "semantic-search",
+    "self-evolve"
+  ],
+  "scripts": {
+    "build": "esbuild index.ts --bundle --platform=node --target=node22 --format=esm --outfile=dist/index.js --external:openclaw --external:'@earendil-works/*' --external:'@lancedb/lancedb' --minify-whitespace",
+    "typecheck": "tsc --noEmit --pretty false",
+    "pack:dry": "npm pack --dry-run"
+  },
+  "files": [
+    "dist/",
+    "src/",
+    "openclaw.plugin.json",
+    "README.md"
+  ],
+  "dependencies": {
+    "@lancedb/lancedb": "^0.33.0",
+    "typebox": "^1.3.3"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.5.28"
+  },
+  "peerDependenciesMeta": {
+    "openclaw": {
+      "optional": true
+    },
+    "@lancedb/lancedb": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "esbuild": "^0.28.1",
+    "typescript": "^5.7.0"
+  },
+  "openclaw": {
+    "extensions": [
+      "./dist/index.js"
+    ],
+    "compat": {
+      "pluginApi": ">=2026.5.28",
+      "minGatewayVersion": "2026.5.28"
+    }
+  }
+}

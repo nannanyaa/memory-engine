@@ -1,0 +1,230 @@
+{
+  "id": "memory-engine",
+  "name": "Memory Engine",
+  "version": "0.1.0-beta.1",
+  "description": "通用记忆决策引擎：情感识别、记忆蒸溜提拔、自进化复盘、开机预拉 + 语义检索。纯 hook 插件，不抢 contextEngine/memory slot。每个功能模块独立 enable_* 开关，默认全部关闭，逐个开测。",
+  "kind": "extension",
+  "activation": {
+    "onStartup": true
+  },
+  "contracts": {
+    "tools": [
+      "mem_find",
+      "mem_promote",
+      "mem_rollback",
+      "mem_status",
+      "mem_compact"
+    ]
+  },
+  "uiHints": {
+    "enable_emotion": {
+      "label": "情感引擎",
+      "help": "开：LLM 识别情感节点→三层记住法（落 dim/01 + 提 MEMORY(P2) + 写情感锚点表）"
+    },
+    "enable_memory_promotion": {
+      "label": "记忆引擎-蒸溜提拔",
+      "help": "开：投入度计数 agent_end + 候选打分 + 分流写 MEMORY/USER/索引"
+    },
+    "enable_recall": {
+      "label": "检索引擎-预拉",
+      "help": "开：before_prompt_build 预拉关键记忆（情感锚点+高投入+周期清单）"
+    },
+    "enable_semantic_vector": {
+      "label": "语义向量检索",
+      "help": "开：lancedb + 云 embedding，mem_find 语义检索增强"
+    },
+    "enable_self_evolve": {
+      "label": "自进化引擎",
+      "help": "开：夜间复盘产提案（日志汇报改动点 + 可手动回退，不自动改文件）"
+    },
+    "enable_daily_digest": {
+      "label": "定时落盘兜底",
+      "help": "开：每日 cron 落盘兜底 + 索引完整性校验"
+    },
+    "enable_context_compaction": {
+      "label": "事件感知压缩引擎",
+      "help": "开：相关性打分+话题切换检测，旧话题提炼归档 memory/events/，并注册 contextEngine（待 slots 接管）"
+    },
+    "enable_context_summarize": {
+      "label": "assemble 摘要替换（治本）",
+      "help": "开：assemble 超预算时把最老段折叠成摘要块替换返回，让发给模型的 messages token 真降、占比能降；原文折叠归档 memory/events/。需 enable_context_compaction 共同开启"
+    }
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "enable_emotion": {
+        "description": "情感引擎总开关（默认关，逐个开测）",
+        "type": "boolean",
+        "default": false
+      },
+      "enable_memory_promotion": {
+        "description": "记忆引擎-蒸溜提拔总开关（默认关）",
+        "type": "boolean",
+        "default": false
+      },
+      "enable_recall": {
+        "description": "检索引擎-预拉+语义检索总开关（默认关）",
+        "type": "boolean",
+        "default": false
+      },
+      "enable_self_evolve": {
+        "description": "自进化引擎总开关（默认关）",
+        "type": "boolean",
+        "default": false
+      },
+      "enable_semantic_vector": {
+        "description": "语义向量检索子开关（默认关；需 enable_recall 共同开启才生效）",
+        "type": "boolean",
+        "default": false
+      },
+      "enable_daily_digest": {
+        "description": "定时落盘兜底子开关（默认关）",
+        "type": "boolean",
+        "default": false
+      },
+      "enable_context_compaction": {
+        "description": "事件感知上下文压缩引擎总开关（默认关，逐个开测）",
+        "type": "boolean",
+        "default": false
+      },
+      "enable_context_summarize": {
+        "description": "assemble 摘要替换开关（默认关；需与 enable_context_compaction 共同开启才生效）。开=超预算时把最老段折叠成摘要块替换返回，治『占比不降』的根",
+        "type": "boolean",
+        "default": false
+      },
+      "workspaceDir": {
+        "description": "主工作区（AGENTS/MEMORY/USER/dim 所在）。默认取 gateway ctx.workspaceDir",
+        "type": "string"
+      },
+      "engineDbPath": {
+        "description": "独立 memory-engine.db 完整路径（默认 <stateDir>/memory-engine.db）",
+        "type": "string"
+      },
+      "lcmDbPath": {
+        "description": "lossless 的 lcm.db 只读路径（默认 <stateDir>/lcm.db）",
+        "type": "string"
+      },
+      "injectTag": {
+        "description": "before_prompt_build 注入块的统一包裹 tag（默认 memory-engine-memories）。与 lossless 的 stripInjectedContextTags 联动",
+        "type": "string",
+        "default": "memory-engine-memories"
+      },
+      "injectMaxChars": {
+        "description": "单次预拉注入块最大字符数（防烧上下文）",
+        "type": "integer",
+        "minimum": 0,
+        "default": 1200
+      },
+      "engagement": {
+        "description": "投入度阈值（记忆引擎 B 信号）",
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "minTurns": { "type": "integer", "minimum": 1, "default": 10 },
+          "minTimeWindows": { "type": "integer", "minimum": 1, "default": 2 },
+          "minTokens": { "type": "integer", "minimum": 1, "default": 30000 }
+        }
+      },
+      "emotion": {
+        "description": "情感引擎配置",
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "llmBaseUrl": { "type": "string" },
+          "llmModel": { "type": "string", "default": "openai/gpt-4o-mini" },
+          "llmApiKey": { "type": "string" },
+          "milestoneRequiresSecondPass": { "type": "boolean", "default": true },
+          "minCharsToClassify": { "type": "integer", "default": 0 }
+        }
+      },
+      "vector": {
+        "description": "语义向量配置",
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "dbPath": { "type": "string" },
+          "embeddingBaseUrl": { "type": "string" },
+          "embeddingModel": { "type": "string" },
+          "embeddingApiKey": { "type": "string" },
+          "topK": { "type": "integer", "default": 3 }
+        }
+      },
+      "selfEvolve": {
+        "description": "自进化引擎配置",
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "proposalDir": { "type": "string" },
+          "cronExpr": { "type": "string", "default": "0 3 * * *" },
+          "timezone": { "type": "string", "default": "Asia/Shanghai" }
+        }
+      },
+      "dailyDigestCron": {
+        "description": "落盘兜底 cron 表达式（默认每日 23:50）",
+        "type": "string",
+        "default": "50 23 * * *"
+      },
+      "compaction": {
+        "description": "事件感知压缩引擎配置",
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "windowSize": { "type": "integer", "minimum": 3, "default": 10 },
+          "relevanceThreshold": { "type": "number", "default": 0.3 },
+          "avgSimSwitchThreshold": { "type": "number", "default": 0.26 },
+          "lengthThreshold": { "type": "number", "default": 0.25 },
+          "dropThreshold": { "type": "number", "default": 0.74 },
+          "recentWindowForInternal": { "type": "integer", "minimum": 2, "default": 5 },
+          "internalRelevanceThreshold": { "type": "number", "default": 0.35 },
+          "minSamples": { "type": "integer", "minimum": 2, "default": 5 },
+          "contextTokenBudget": { "type": "integer", "minimum": 0, "default": 920000 },
+          "backfillWindowSize": { "type": "integer", "minimum": 0, "default": 40 },
+          "backfillSessionKey": { "type": "string", "default": "agent:main:main" },
+          "llmTimeoutMs": { "type": "integer", "default": 20000 },
+          "embeddingTimeoutMs": { "type": "integer", "default": 10000 },
+          "archiveDir": { "type": "string" },
+          "segmentChars": { "type": "integer", "minimum": 1000, "default": 5600 },
+          "maxSegmentsPerArchive": { "type": "integer", "minimum": 1, "default": 45 },
+          "maxQueue": { "type": "integer", "minimum": 1, "default": 100 },
+          "maxCompactionsPerMinute": { "type": "integer", "minimum": 0, "default": 6 },
+          "memoryHighWaterMB": { "type": "integer", "minimum": 0, "default": 512 },
+          "memoryPollMs": { "type": "integer", "minimum": 0, "default": 5000 },
+          "summarizeRatioThreshold": {
+            "type": "number",
+            "default": 0.25,
+            "description": "assemble 摘要替换触发占比：messages估算token/tokenBudget >= 此值才折叠（超 25% 触发）"
+          },
+          "summarizeTargetRatio": {
+            "type": "number",
+            "default": 0.12,
+            "description": "压缩落点目标占比：超触发线后把上下文压回到此值（压到 12%，整体 15%~20% 波动）。替代旧 hardcode ×0.85"
+          },
+          "eventsRotateSizeBytes": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 1048576,
+            "description": "events 单文件滚动阈值（字节，默认 1MB）。单文件超阈值归档时自动开新滚动文件 YYYY-MM-DD-001.md/-002…，不再无限续写同一文件。≤0=不滚动（回退旧行为）"
+          },
+          "summarizeMinOldMessages": {
+            "type": "integer",
+            "minimum": 2,
+            "default": 6,
+            "description": "一次摘要替换至少折叠的最老消息数（不足则不动）"
+          },
+          "summarizeMaxChars": {
+            "type": "integer",
+            "minimum": 200,
+            "default": 1500,
+            "description": "单条合成摘要块文本上限（字符，防把摘要又写爆）"
+          }
+        }
+      },
+      "rollbackBackupDir": {
+        "description": "写盘前备份目录（回滚机制用）",
+        "type": "string"
+      }
+    }
+  }
+}
