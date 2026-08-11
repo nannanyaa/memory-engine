@@ -259,6 +259,19 @@ npm run typecheck    # tsc --noEmit（需要本地装 openclaw SDK 类型）
   ```
 - **手动筛**：随时用 `mem_promote`（把指定情感锚点/高投入提拔进 MEMORY/USER）直接触发即时晋升，绕过提案缓冲。
 
+#### 可选项 A：脚本化定期筛（推荐，稳定可控）
+
+上面示例（`openclaw cron add ... --message "调用 applyPendingPromotions 筛选晋升提案"`）属于此选项——agent 只管按脚本化指令机械筛选晋升提案，决策由人预设，行为可预测、易回退。**适合多数想稳妥的用户**。
+
+#### 可选项 B：完全交给 agent 自主决策（进阶，较激进球）
+
+如果你希望 agent 扮演**独立的记忆管理者**——不只筛晋升提案，而是每天被 cron 唤醒后**自主历遍提案 + 权威文件，自己判断该往哪归位、怎么升级**（含 `MEMORY.md`/`USER.md`/`SOUL.md`/`AGENTS.md`/`TOOLS.md`/`IDENTITY.md`/`HEARTBEAT.md` 及其专项子文件），直接改写不被打断——可按需启用：
+
+- **适合场景**：你信任 agent 的自主动、希望记忆/规则/人格文件随时间和提案**持续自我演化**（而非一层不变），且能接受 agent 对权威文件做增量改写（均带备份可回滚）。
+- **体验**：`enable_memory_promotion` 只管产出提案文件；另由 agent 自建一条 cron 唤醒主会话自主历遍归位（不依赖 `ctx.getCron` 的脚本化筛选）。
+- **安全护栏**：仍保留 writers 网关（写前备份 + 台账，`mem_rollback` 可回退）；SOUL/AGENTS 仅在行为规则/立场真变化时才动；不臆造（改动来自提案原文）。
+- **可用它自行决定**：这是二选一——选 A 脚本化稳妥，选 B 交给 agent 自主，或两者也可并存（A 兜底筛晋升、B 做主动历遍演化）。
+
 ### 5.8 上下文压缩（`compaction`）—— 算法决策核心区
 
 > **💡 基准前提**：本节的推荐值（`contextTokenBudget: 920000`、`lengthThreshold: 0.20`、`summarizeRatioThreshold: 0.30`、`summarizeTargetRatio: 0.15` 等）是为**大上下文窗口（如 1M）模型**标定的。若你用**小窗口模型**（如 128k / 64k），请**按比例缩放 `contextTokenBudget`**（如 128k 窗口建议配 `~115200`，即 128k×0.9）。⚠️ 直接套用 1M 的推荐值，固定开销（工具 schema `contextToolOverheadTokens: 45000`、系统提示基底）在小窗口下占比大幅膨胀，会撑高判定值——导致小窗口模型**过早触发**压缩。请缩放后据实际触发行为微调各阈值。
