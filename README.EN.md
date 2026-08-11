@@ -34,6 +34,22 @@ In other words: **users who never installed lossless can install and use it imme
 
 ---
 
+## 0.7 Known Issues (important, read first)
+
+### 1) Memory usage
+
+- The more `enable_*` modules you enable, the more extra memory you use: LLM / embedding background tasks, LanceDB vector index, and SQLite (WAL) all consume memory.
+- Built-in guardrail: `memoryHighWaterMB` (default `512`) — when heapUsed exceeds this high-water mark, heavy work like compaction pauses while waiting for memory to free; set to `0` to disable (not recommended).
+- For large deployments / long-running multi-session setups, keep an eye on peak memory. If you hit memory pressure, consider disabling `enable_semantic_vector` first (LanceDB is the heaviest) or lowering `memoryHighWaterMB`.
+
+### 2) Compaction threshold vs Web panel display — different denominators
+
+- The plugin's length trigger **prefers OpenClaw's runtime-parsed official context budget** (`ctx.contextTokenBudget`) as the denominator; the `contextTokenBudget` config (default `920000`) is only a fallback default and may be overridden by the official budget at runtime.
+- So the "used / budget" ratio shown in the Web console does **not** always map 1:1 to `lengthThreshold` (`0.20`), etc. in the README/config table — the panel shows the current session's actual budget, while the plugin triggers on the runtime budget. This is **by design, not a bug**.
+- If you see "panel shows 20% but no compaction" or "13% yet compaction happens", this is normal: the trigger and display use different bases; rely on the actual runtime budget.
+
+---
+
 ## 1. What Is This (30-second overview)
 
 It does the following automatically in the background (one capability per line):
