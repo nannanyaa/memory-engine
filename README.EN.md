@@ -249,9 +249,9 @@ Built-in tool quick reference:
 
 ### Authors & Credits
 
-- **Author / Design lead**: Lingxiao (绫潇) — concept, overall architecture and core algorithm design.
+- **Author / Design lead**: Lingxiao (绫潇) — concept realization, overall architecture and core algorithm design.
 - **Solution design & planning**: Shu Wei (书微) — transformation plans, technical design and design docs.
-- **Project partner**: nannan — requirements, direction and acceptance.
+- **Project founder · Product lead (human)**: nannan — originated the concept & requirements, set direction, owned acceptance.
 - **Implementation**: Luo Su (落苏) — coding and algorithm implementation.
 - **Security & quality review**: Zhi An (知安) — security and config consistency.
 
