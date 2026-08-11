@@ -246,3 +246,12 @@ Built-in tool quick reference:
 - **License**: [MIT](./package.json).
 - Project principle: "stability first, semi-automatic evolution" — self-evolution only produces proposals, never auto-applies; automatic writes are always append + backed up + rollback-able.
 - Contributions welcome per §7; for major algorithm changes please update this README's config manual and rationale as well.
+
+### Authors & Credits
+
+- **Author / Design lead**: Lingxiao (绫潇) — concept, architecture and core algorithm design.
+- **Project partner**: nannan — requirements, direction and acceptance.
+- **Implementation**: Luo Su (落苏) — coding and algorithm implementation.
+- **Security & quality review**: Zhi An (知安) — security and config consistency.
+
+> Born from a personal team's self-built practice, open-sourced to give back; Star / Issue / PR are welcome.
