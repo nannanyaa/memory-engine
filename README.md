@@ -44,13 +44,13 @@
 - 内置护栏：`memoryHighWaterMB`（默认 `512`）——heapUsed 超此高水位会暂停压缩等重活等待内存释放；设为 `0` 可关闭（不推荐）。
 - 大规模部署 / 多会话长期运行建议关注峰值内存；如遇内存压力，可优先关掉 `enable_semantic_vector`（lancedb 最吃内存）或调低 `memoryHighWaterMB`。
 
-### 2) 压缩阈值 vs Web 面板显示口径可能不一致
+### 2) 压缩阈值 vs Web 面板显示口径（已校准一致）
 
-- 插件的长度触发判据**优先采用 OpenClaw 运行时解析的官方上下文预算**（`ctx.contextTokenBudget`）作为分母；`contextTokenBudget` 配置（默认 `920000`）仅是兜底默认值，运行时可能被官方预算覆盖。
-- 因此：Web 控制台「已用 / 预算」显示的占比，与 README/配置表里写的 `lengthThreshold`（`0.20`）等**不一定严格一一对应**——面板按当前会话实际预算显示，插件按运行时预算判据触发。这是**设计使然，不是 bug**。
-- 若你发现"面板显示 20% 却不压缩 / 13% 却压缩"，属正常：判据与显示口径不同；以运行时实际生效的预算为准。
+- 插件的长度触发判据**优先采用运行时真实上下文快照**（`before_prompt_build` 快照的 usedTokens/budget，与 Web 面板同源）作为分子/分母；`contextTokenBudget` 配置（默认 `920000`）仅是兜底默认值。
+- 分子 usedTokens = 系统提示/工具基底 + **完整消息序列化估算**（`estimateSerializedMessagesTokens`，含工具调用/结构化 payload，非纯文本）。故 Web 控制台「已用 / 预算」显示的占比与 `lengthThreshold`（`0.25`）**基本一一对应**，触发时机一致。
+- 若仍看到偏差：确认已升级到 `0.2.0-beta.2+`（旧版用纯文本抽取会低估 2-3x），并确认 `before_prompt_build` 的 `event.prompt` 近空时已改走 messages 序列化估算（version ≥ beta.2 内置）。
 
-**为什么会不一致（计算方式差异）**
+**口径细节（计算方式）**
 
 | | Web 面板显示 | 插件触发判据 |
 | --- | --- | --- |
@@ -66,10 +66,10 @@
 
 它后台自动做这几件事（一句话一个能力）：
 
-- **记忆蒸馏提拔** —— 按"语义话题段"统计投入度，高投入自动登记候选并向 `MEMORY.md`/`USER.md` 提请晋级（写前自审防语义漂移）。
+- **记忆蒸馏提拔（提案半自动）** —— 按"语义话题段"统计投入度，高投入被蒸馏成**晋升提案文件**（`<proposalDir>/promotion/pending-*.md`），**不直接写 `MEMORY.md`/`USER.md`**；由 agent 设置 cron 定期调 `nightlyReview`（内部 `applyPendingPromotions`）筛选：经价值判定 + 自审复核后真正晋级，琐事在此过滤。避免来回一堆乱七八糟直接污染长期记忆。
 - **情感识别·三层记住法** —— LLM 识别情感节点：① 落 `dim/01-emotional.md`（原话+感受+来源）→ ② 里程碑级提 `MEMORY.md`（P2 待确认）→ ③ 写情感锚点表供预拉。
 - **记忆预拉** —— `before_prompt_build` 时把关键记忆（情感锚点 + 高投入 + 周期清单）主动注入上下文，且带生命周期（消化后不反复报）+ 冷却。
-- **上下文压缩归档** —— 事件感知的话题切换检测 + 长度阈值兜底，旧话题提炼归档 `memory/events/`，并可选做 assemble 摘要替换让发给模型的 messages token 真降。
+- **上下文压缩归档（估算已校准）** —— 事件感知的话题切换检测 + 长度阈值兜底，旧话题提炼归档 `memory/events/`，并可选做 assemble 摘要替换让发给模型的 messages token 真降。压缩占比现用**完整消息序列化估算**（`estimateSerializedMessagesTokens`，含工具调用/结构化 payload），与 Web 面板「已用 / 预算」同口径，触发时机一致。
 - **每日落盘兜底 + 夜间自进化提案** ——（可选）每日 cron 落盘兜底 + 索引完整性校验；夜间复盘产半自动进化提案。
 
 ---
@@ -93,7 +93,7 @@
 | 模块 | 作用 | 开关 | 默认 | 什么时候开 |
 | --- | --- | --- | --- | --- |
 | 情感引擎 | 三层记住法 + 情感锚点双轨（LLM 分类） | `enable_emotion` | false | 想让 agent 记住"轻但重要"的情感表达 |
-| 记忆引擎·蒸馏提拔 | 投入度计数 + 自动晋级 MEMORY/USER | `enable_memory_promotion` | false | 想让高频高投入主题沉淀进长期记忆 |
+| 记忆引擎·蒸馏提拔 | 投入度计数 → 提案文件 → 夜间筛选晋升（提案半自动） | `enable_memory_promotion` | false | 想让高频高投入主题沉淀进长期记忆（需配夜间筛选 cron） |
 | 检索引擎·预拉 | 关键记忆预热注入 + 生命周期 | `enable_recall` | false | 想让 agent 开机/开始时就想得起该想的事 |
 | 语义向量检索 | lancedb + 云 embedding，语义 `mem_find` | `enable_semantic_vector` | false | 想修"关键词不匹配漏匹配"；**需 recall 同开**才生效 |
 | 事件感知上下文压缩 | avgSim 话题切换 + 长度兜底，提炼归档 | `enable_context_compaction` | false | 想让超长会话上下文自动瘦身不丢信息 |
@@ -244,6 +244,20 @@ npm run typecheck    # tsc --noEmit（需要本地装 openclaw SDK 类型）
 | 字段 | 类型 | 默认 | 含义 |
 | --- | --- | --- | --- |
 | `dailyDigestCron` | string | `50 23 * * *` | 每日落盘兜底 cron。**按你的作息调**——想在当天结束时落盘就用默认；想睡前一小时落盘（如 `0 0 * * *`）或凌晨落盘都可改。 |
+
+### 5.7.1 晋升提案 · 夜间筛选 cron（提案半自动必读）
+
+`enable_memory_promotion` 开启后，高投入主题**不直接写 `MEMORY.md`/`USER.md`**，而是先写成晋升提案文件（`<proposalDir>/promotion/pending-*.md`）。要真正晋级，需 **agent 自己设置一条 cron 定期筛选**（半自动）：
+
+- **筛选入口**：`nightlyReview`（`src/modules/selfevolve.ts`），其内部先调 `applyPendingPromotions`——对每份 pending 提案做**价值判定（lossless 四类）+ 自审复核**，值得的追加合并进 `MEMORY.md`/`USER.md` + 登记索引 + 台账，并将已处理提案归档到 `promotion/applied/`。琐事/低价值在筛选时被过滤，不会污染长期记忆。
+- **触发时机**：`enable_self_evolve` 开启时，`nightlyReview` 默认由 `selfEvolve.cronExpr`（默认 `0 3 * * *` 凌晨3点）自动调用；也可不依赖自进化，由 agent 自己设 cron `applyPendingPromotions` 定期筛（如每天 `30 23 * * *`）。
+- **怎么配**（OpenClaw CLI，投给 agent 使其能跑插件）——示例每天凌晨筛选晋升：
+  ```bash
+  openclaw cron add "晋升提案筛选" --cron "30 23 * * *" \
+    --agent main \
+    --message "调用 memory-engine 的 applyPendingPromotions 筛选晋升提案；有值得的增加进 MEMORY.md/USER.md"
+  ```
+- **手动筛**：随时用 `mem_promote`（把指定情感锚点/高投入提拔进 MEMORY/USER）直接触发即时晋升，绕过提案缓冲。
 
 ### 5.8 上下文压缩（`compaction`）—— 算法决策核心区
 
