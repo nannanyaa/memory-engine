@@ -1,0 +1,28 @@
+{
+  "comment": "Preset A: 1M large-window standard. For DeepSeek 1M / GPT-class big windows on normal server/PC. Aggressive compaction, preload on, emotion on. embedding must be configured (falls back to keyword FTS if unset).",
+  "enable_emotion": true,
+  "enable_memory_promotion": true,
+  "enable_recall": true,
+  "enable_semantic_vector": false,
+  "enable_context_compaction": true,
+  "enable_context_summarize": true,
+  "enable_daily_digest": true,
+  "enable_self_evolve": false,
+  "recall": {
+    "maxHighEngagementPreloads": 3,
+    "anchorCooldownMs": 43200000
+  },
+  "compaction": {
+    "lengthThreshold": 0.20,
+    "contextTokenBudget": 900000,
+    "contextToolOverheadTokens": 45000,
+    "relevanceThreshold": 0.30,
+    "avgSimSwitchThreshold": 0.26,
+    "backfillWindowSize": 40,
+    "backfillSessionKey": "agent:main:main",
+    "memoryHighWaterMB": 512,
+    "summarizeRatioThreshold": 0.30,
+    "summarizeTargetRatio": 0.15,
+    "emergencySyncThreshold": 0.90
+  }
+}

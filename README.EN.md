@@ -134,6 +134,46 @@ npm run typecheck    # tsc --noEmit (requires local OpenClaw SDK types)
 
 ---
 
+## 4.5 Configuration Presets (copy-paste ready)
+
+There are a lot of options — here are 3 common presets. **Pick the one for you and copy it** (or reference the files under `presets/`). If you're cautious, start with preset C.
+
+### Preset A: 1M model, out-of-the-box (`presets/1m-standard.json`)
+For: DeepSeek 1M / GPT-class large windows, on a normal server/PC.
+Features: aggressive compaction, preload and emotion on.
+Note: embedding must be configured; without it, retrieval falls back to keyword FTS.
+```json
+{ "vector": {"embeddingBaseUrl":"","embeddingModel":"","embeddingApiKey":""},
+  "enable_emotion": true, "enable_memory_promotion": true, "enable_recall": true,
+  "enable_context_compaction": true, "enable_context_summarize": true, "enable_daily_digest": true,
+  "enable_semantic_vector": false, "enable_self_evolve": false }
+// see presets/1m-standard.json (includes full compaction.* recommended values)
+```
+
+### Preset B: low-resource / Raspberry Pi (`presets/low-resource.json`)
+For: 1C1G / old laptop / Raspberry Pi.
+Features: recall + compaction only; summarize/emotion/vector off; rate limits maxed to save resources.
+Note: compaction is slower, so the emergency threshold is lower (0.85).
+```json
+{ "enable_memory_promotion": true, "enable_recall": true, "enable_context_compaction": true,
+  "enable_emotion": false, "enable_semantic_vector": false, "enable_context_summarize": false, "enable_self_evolve": false }
+// see presets/low-resource.json (includes rate-limit / memory-guard recommended values)
+```
+
+### Preset C: minimal / safe (`presets/minimal.json`)
+For: first-time install, don't touch compaction, afraid of breaking context.
+Features: **read/append only** — recall + memory_promotion, no compaction/emotion/vector.
+Note: safest; run a few days, confirm no side effects, then upgrade tiers.
+```json
+{ "enable_memory_promotion": true, "enable_recall": true,
+  "enable_emotion": false, "enable_semantic_vector": false, "enable_context_compaction": false, "enable_self_evolve": false }
+// see presets/minimal.json
+```
+
+> **Note**: `emergencySyncThreshold` in the presets is a **planned** emergency-fallback field (see roadmap); not yet implemented in the current version. Everything else is usable now.
+
+---
+
 ## 5. Configuration Reference (field / type / default / meaning / rationale)
 
 > This table doubles as the plugin's "design-decisions" manual for its tunable algorithms. Every field is defined in `openclaw.plugin.json`'s `configSchema`.

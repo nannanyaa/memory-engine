@@ -1,0 +1,16 @@
+{
+  "comment": "Preset C: minimal safe. For first-time users who are nervous about compaction. Only recall + memory_promotion (read/append; no compaction, no emotion, no vector, no self-evolve). emergencySyncThreshold not enabled.",
+  "enable_emotion": false,
+  "enable_memory_promotion": true,
+  "enable_recall": true,
+  "enable_semantic_vector": false,
+  "enable_context_compaction": false,
+  "enable_context_summarize": false,
+  "enable_daily_digest": false,
+  "enable_self_evolve": false,
+  "recall": {
+    "maxHighEngagementPreloads": 3,
+    "anchorCooldownMs": 43200000,
+    "injectMaxChars": 1200
+  }
+}

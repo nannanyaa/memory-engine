@@ -1,0 +1,29 @@
+{
+  "comment": "Preset B: low-resource / Raspberry Pi / 1C1G / old laptop. recall + compaction only; summarize/emotion/vector off; rate limits maxed. emergencySyncThreshold lower (0.85) since compaction is slower on weak hardware.",
+  "enable_emotion": false,
+  "enable_memory_promotion": true,
+  "enable_recall": true,
+  "enable_semantic_vector": false,
+  "enable_context_compaction": true,
+  "enable_context_summarize": false,
+  "enable_daily_digest": true,
+  "enable_self_evolve": false,
+  "recall": {
+    "maxHighEngagementPreloads": 2,
+    "anchorCooldownMs": 86400000,
+    "injectMaxChars": 800
+  },
+  "compaction": {
+    "lengthThreshold": 0.25,
+    "contextTokenBudget": 115200,
+    "contextToolOverheadTokens": 30000,
+    "memoryHighWaterMB": 256,
+    "maxCompactionsPerMinute": 4,
+    "maxSegmentsPerArchive": 20,
+    "segmentChars": 3000,
+    "backfillWindowSize": 20,
+    "summarizeRatioThreshold": 0.30,
+    "summarizeTargetRatio": 0.20,
+    "emergencySyncThreshold": 0.85
+  }
+}

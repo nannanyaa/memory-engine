@@ -134,6 +134,46 @@ npm run typecheck    # tsc --noEmit（需要本地装 openclaw SDK 类型）
 
 ---
 
+## 4.5 配置预设（复制粘贴即可用）
+
+配置项多、上手门槛高——下面给 3 套常用预设，**选中适合你的直接抄**（也可直接引用 `presets/` 下的文件）。想稳妥的新用户优先用预设 C。
+
+### 预设 A：1M 模型开箱即用（`presets/1m-standard.json`）
+适用：DeepSeek 1M / GPT 系列大窗口模型，正常服务器/PC。
+特点：压缩积极、预拉全开、情感识别启用。
+注意：embedding 需自行配置，不配自动降级为关键词检索。
+```json
+{ "vector": {"embeddingBaseUrl":"","embeddingModel":"","embeddingApiKey":""},
+  "enable_emotion": true, "enable_memory_promotion": true, "enable_recall": true,
+  "enable_context_compaction": true, "enable_context_summarize": true, "enable_daily_digest": true,
+  "enable_semantic_vector": false, "enable_self_evolve": false }
+// 详见 presets/1m-standard.json（含 compaction.* 全套推荐值）
+```
+
+### 预设 B：低资源 / 树莓派（`presets/low-resource.json`）
+适用：1C1G / 老笔记本 / 树莓派。
+特点：只开 recall + 压缩，关 summarize/emotion/vector，限流拉满省资源。
+注意：压缩更慢，紧急兜底阈值更低（0.85）。
+```json
+{ "enable_memory_promotion": true, "enable_recall": true, "enable_context_compaction": true,
+  "enable_emotion": false, "enable_semantic_vector": false, "enable_context_summarize": false, "enable_self_evolve": false }
+// 详见 presets/low-resource.json（含限流/内存护栏推荐值）
+```
+
+### 预设 C：最小可用（`presets/minimal.json`）
+适用：第一次装、不想动压缩、怕搞坏上下文。
+特点：**只读不写**——只开 recall + memory_promotion，不碰压缩/情感/向量。
+注意：最安全，适合先跑几天确认无副作用再往上升级。
+```json
+{ "enable_memory_promotion": true, "enable_recall": true,
+  "enable_emotion": false, "enable_semantic_vector": false, "enable_context_compaction": false, "enable_self_evolve": false }
+// 详见 presets/minimal.json
+```
+
+> **提示**：预设里的 `emergencySyncThreshold` 是**规划中的紧急兜底字段**（详见 roadmap），当前版本尚未实现；其余字段立即可用。
+
+---
+
 ## 5. 配置说明（字段 / 类型 / 默认值 / 含义 / 决策理由）
 
 > 这份清单同时就是插件可调算法的"设计决策"说明书。所有字段在 `openclaw.plugin.json` 的 `configSchema` 里定义。
