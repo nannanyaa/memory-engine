@@ -1,4 +1,4 @@
-name: probe
+name: probe2
 
 on:
   push:
@@ -7,7 +7,12 @@ on:
   workflow_dispatch:
 
 jobs:
-  probe:
+  setup:
     runs-on: ubuntu-latest
     steps:
-      - run: echo "runner is alive"
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: echo "checkout+setup-node ok"
