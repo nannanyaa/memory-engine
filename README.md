@@ -26,6 +26,14 @@
 
 ---
 
+## 0.6 平台兼容性
+
+- **跨平台设计**：核心依赖均跨平台——SQLite 使用 Node.js 内置的 `node:sqlite`（非原生绑定），语义向量用 [LanceDB](https://lancedb.com/)（官方支持 Windows / macOS / Linux），LLM 与 embedding 走标准 HTTP `fetch`。**源码无任何 Linux 特有调用**（无 `/dev/`、`/etc/`、`sudo`、`chmod`、`init.d`、进程信号等）；路径一律使用 `<stateDir>` / `<workspaceDir>` 抽象，不硬编码分隔符。
+- **已在 Linux 生产环境运行验证**；macOS / Windows 从代码层面支持，但建议首次接入先做一次冒烟验证（`mem_status` 能列出开关、跑一次压缩归档看 `memory/events/` 是否产出）。
+- **可端口性说明**：默认 `timezone = Asia/Shanghai`、`dailyDigestCron = 50 23 * * *` 均为可配置项，可据运行环境调整。
+
+---
+
 ## 1. 这是什么（30 秒定位）
 
 它后台自动做这几件事（一句话一个能力）：

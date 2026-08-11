@@ -26,6 +26,14 @@ In other words: **users who never installed lossless can install and use it imme
 
 ---
 
+## 0.6 Platform Compatibility
+
+- **Cross-platform by design**: core dependencies are cross-platform — SQLite uses Node.js's built-in `node:sqlite` (no native bindings), semantic vector uses [LanceDB](https://lancedb.com/) (official Windows / macOS / Linux support), and LLM / embedding go over standard HTTP `fetch`. **No Linux-specific calls in the source** (no `/dev/`, `/etc/`, `sudo`, `chmod`, `init.d`, process signals, etc.); paths use `<stateDir>` / `<workspaceDir>` abstractions, no hardcoded separators.
+- **Verified on a Linux production environment**; macOS / Windows are supported at the code level, but for first-time setup a quick smoke test is recommended (run `mem_status` to see switches listed, and trigger one compaction to confirm `memory/events/` produces an archive).
+- **Portability note**: the defaults `timezone = Asia/Shanghai` and `dailyDigestCron = 50 23 * * *` are configurable and can be adjusted to your environment.
+
+---
+
 ## 1. What Is This (30-second overview)
 
 It does the following automatically in the background (one capability per line):
