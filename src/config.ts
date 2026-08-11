@@ -227,7 +227,7 @@ export function normalizeConfig(
     vector: {
       dbPath: asString(vector.dbPath) || `${stateDir}/memory-engine-vector`,
       embeddingBaseUrl: asString(vector.embeddingBaseUrl) || "",
-      embeddingModel: asString(vector.embeddingModel) || "embedding-2",
+      embeddingModel: asString(vector.embeddingModel) || "",
       embeddingApiKey: asString(vector.embeddingApiKey) || "",
       topK: asInt(vector.topK, 3),
     },

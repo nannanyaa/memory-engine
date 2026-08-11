@@ -118,8 +118,27 @@ npm run typecheck    # tsc --noEmit（需要本地装 openclaw SDK 类型）
 | 字段 | 类型 | 默认 | 含义 / 决策理由 |
 | --- | --- | --- | --- |
 | `dbPath` | string | `<stateDir>/memory-engine-vector` | lancedb 向量库路径。 |
-| `embeddingBaseUrl`/`embeddingModel`/`embeddingApiKey` | string | 空 / `embedding-2` / 空 | 云 embedding。**决策：语义向量必上**，解决"关键词不匹配导致漏匹配"硬伤。缺失时降级用关键词 FTS。 |
+| `embeddingBaseUrl` | string | 空（**需显式配置**） | 任意 **OpenAI 兼容**的 embedding API 的 Base URL（结尾不带 `/`）。 |
+| `embeddingModel` | string | 空（**需显式配置**） | 该 provider 下要用的 embedding 模型名。 |
+| `embeddingApiKey` | string | 空 | 该 provider 的 API Key（有鉴权才填）。 |
 | `topK` | int | `3` | `mem_find` 默认返回条数。 |
+
+> ⚠️ **embedding 必须显式配置**：插件**不内置/不预设任何第三方 embedding 服务**，`embeddingBaseUrl`/`embeddingModel` 留空时语义向量模块自动禁用并降级为关键词 FTS 检索（功能仍可用，只检索粒度变关键词级）。默认值刻意保持为空，避免误指向某一家。
+>
+> **支持任意 OpenAI 兼容 embedding API**（`POST {baseUrl}/embeddings`，返回 `data[].embedding`）。常见 provider 参考示例：
+>
+> | Provider | Base URL | 示例 Model | Key 获取 |
+> | --- | --- | --- | --- |
+> | 智谱 AI (Zhipu) | `https://open.bigmodel.cn/api/paas/v4` | `embedding-2` | 智谱控制台 → API Keys |
+> | OpenAI | `https://api.openai.com/v1` | `text-embedding-3-small` | OpenAI platform → API keys |
+> | 阿里云通义 (DashScope) | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `text-embedding-v3` | 百度智能云/DashScope |
+> | 硅基流动 (SiliconFlow) | `https://api.siliconflow.cn/v1` | `BAAI/bge-m3` | SiliconFlow 控制台 |
+> | 本地 Ollama | `http://localhost:11434/v1` | `nomic-embed-text` | 无需 Key |
+>
+> 配置示例（`openclaw.json` 的 memory-engine 插件 `vector` 段）：
+> ```json
+> { "vector": { "embeddingBaseUrl": "https://open.bigmodel.cn/api/paas/v4", "embeddingModel": "embedding-2", "embeddingApiKey": "<你的key>" } }
+> ```
 
 ### 5.6 自进化（`selfEvolve`）
 | 字段 | 类型 | 默认 | 含义 / 决策理由 |
