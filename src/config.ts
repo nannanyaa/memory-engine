@@ -38,6 +38,29 @@ export interface MemoryEngineConfig {
     minTokens: number;
   };
 
+  // —— 记忆晋升 · 价值判定（2026-08-13 南南拍板：六维加权 + 硬门槛 + 绫潇终审） ——
+  // 量纲约定（知安 C3）：
+  //   scoreThreshold（0.50） = 六维 valueScore（0~1 加权分）
+  //   strongReleaseConfidence（0.80）/ nightlyAutoApplyConfidence（0.85） = LLM 四类分类 confidence（另一坐标）
+  //   三者量纲不同，严禁混用同一变量。
+  promotion: {
+    scoreThreshold: number;            // 六维 valueScore 硬门槛，默认 0.50
+    weights: {
+      relevance: number;               // 0.30 是否命中四类事实
+      consolidation: number;           // 0.24 唯一/去重价值
+      recency: number;                 // 0.15 新鲜度
+      frequency: number;               // 0.14 投入度热度
+      queryDiversity: number;          // 0.10 话题延续（跨段）
+      richness: number;                // 0.07 概念富度
+    };
+    trivialFilter: boolean;            // 直接剔琐事开关，默认 true
+    funnelMaxPerTopic: number;         // 同 topic 未 apply 前提案上限，默认 1
+    strongReleaseConfidence: number;   // 强放行例外：conf≥此值(LLM分类置信度)放行，默认 0.80
+    nightlyAutoApplyConfidence: number; // 夜间 high-conf 自动 apply 线(LLM分类置信度)，默认 0.85
+    requireHumanReview: boolean;       // 绫潇终审闸门，默认 true
+    staleHours: number;                // 24h 超时兜底（未审滞留时长），默认 24
+  };
+
   // —— 检索引擎预拉生命周期（README：预拉有生命周期，消化了就不反复报）——
   recall: {
     /** 高投入主题最多被预拉几次；达到后自动从"待报榜单"降级清出。0=永不过期（恢复旧行为）。 */
@@ -94,8 +117,8 @@ export interface MemoryEngineConfig {
     windowSize: number; // 相关性打分滑动窗口（前 N 轮，默认 10）
     relevanceThreshold: number; // 衬底：avgSim>=此值判定明确同事件、不压缩（实测话题内中位≈0.345，取 0.30 保护多数话题内轮）
     avgSimSwitchThreshold: number; // 主判据切换线：avgSim<=此值判话题切换（实测边界中位≈0.24、最优判别点≈0.26）
-    lengthThreshold: number; // 上下文长度阈值兜底（设计定 0.20=20%），超则压缩。用于常规后台压缩触发线。
-    emergencySyncThreshold: number; // 紧急同步压缩兜底阈值（设计定默认 0.50，不可更大）。上下文占比不低于此值时，强制同步压缩一次，防上下文爆掉。0=关闭。
+    lengthThreshold: number; // 上下文长度阈值兜底（南南定 0.20=20%），超则压缩。用于常规后台压缩触发线。
+    emergencySyncThreshold: number; // 紧急同步压缩兜底阈值（南南定默认 0.50，不可更大）。上下文占比不低于此值时，强制同步压缩一次，防上下文爆掉。0=关闭。
     dropThreshold: number; // avgSim 切换线的 drop 镜像视图：drop=1-avgSim>=此值 等价于 avgSim<=切换线（保持单向、纯展示）
     recentWindowForInternal: number; // 前段窗口（avgSim 取最近几轮，同时作内部相关软信号窗口）
     internalRelevanceThreshold: number; // 近轮内部相关软信号（判别力弱，不再硬性门槛；仅辅助，防哑火）
@@ -110,7 +133,7 @@ export interface MemoryEngineConfig {
      * 0=关闭（仅按运行时实测基底 + 会话消息估算）。不精确，需按真实工具集调校。
      */
     contextToolOverheadTokens: number;
-    /** 启动时从现有会话历史回填窗口的最多轮数（设计定：一旦加载即能按现有上下文检测压缩）。 */
+    /** 启动时从现有会话历史回填窗口的最多轮数（南南要求：一旦加载即能按现有上下文检测压缩）。 */
     backfillWindowSize: number;
     /** 回填时用于识别主会话的 session_key（如 agent:main:main）。空则跳过回填。 */
     backfillSessionKey: string;
@@ -145,7 +168,7 @@ export interface MemoryEngineConfig {
     summarizeMaxChars: number;
     /**
      * 方案 A：压缩落点目标占比（锯齿形：超 summarizeRatioThreshold 触发 → 压回到此值）。
-     * 设计定：触发线 0.30、落点 0.15（Web 端"已用/预算"上下文占比据此压缩）。默认 0.15。
+     * 南南拍板：触发线 0.30、落点 0.15（Web 端"已用/预算"上下文占比据此压缩）。默认 0.15。
      */
     summarizeTargetRatio: number;
   };
@@ -179,6 +202,7 @@ export function normalizeConfig(
   const stateDir = env.stateDir || workspaceDir;
 
   const engagement = asObj(rawCfg.engagement);
+  const promotion = asObj(rawCfg.promotion);
   const recall = asObj(rawCfg.recall);
   const emotion = asObj(rawCfg.emotion);
   const vector = asObj(rawCfg.vector);
@@ -206,9 +230,27 @@ export function normalizeConfig(
       asString(rawCfg.rollbackBackupDir) || `${stateDir}/.memory-engine-rollback`,
 
     engagement: {
-      minTurns: asInt(engagement.minTurns, 10),
-      minTimeWindows: asInt(engagement.minTimeWindows, 2),
-      minTokens: asInt(engagement.minTokens, 30000),
+      minTurns: asInt(engagement.minTurns, 15),
+      minTimeWindows: asInt(engagement.minTimeWindows, 3),
+      minTokens: asInt(engagement.minTokens, 40000),
+    },
+
+    promotion: {
+      scoreThreshold: asFloat(promotion.scoreThreshold, 0.5),
+      weights: {
+        relevance: asFloat(asObj(promotion.weights).relevance, 0.3),
+        consolidation: asFloat(asObj(promotion.weights).consolidation, 0.24),
+        recency: asFloat(asObj(promotion.weights).recency, 0.15),
+        frequency: asFloat(asObj(promotion.weights).frequency, 0.14),
+        queryDiversity: asFloat(asObj(promotion.weights).queryDiversity, 0.1),
+        richness: asFloat(asObj(promotion.weights).richness, 0.07),
+      },
+      trivialFilter: asBool(promotion.trivialFilter, true),
+      funnelMaxPerTopic: asInt(promotion.funnelMaxPerTopic, 1),
+      strongReleaseConfidence: asFloat(promotion.strongReleaseConfidence, 0.8),
+      nightlyAutoApplyConfidence: asFloat(promotion.nightlyAutoApplyConfidence, 0.85),
+      requireHumanReview: asBool(promotion.requireHumanReview, true),
+      staleHours: asInt(promotion.staleHours, 24),
     },
 
     recall: {
@@ -252,7 +294,7 @@ export function normalizeConfig(
       // 主判据切换线：avgSim<=此值判话题切换。标定：纯 avgSim 最优 F1≈0.50 @0.26（召回 5/8 边界、误报 7/73≈10%）。
       avgSimSwitchThreshold: asFloat(compaction.avgSimSwitchThreshold, 0.26),
       lengthThreshold: asFloat(compaction.lengthThreshold, 0.2),
-      // 紧急同步压缩兕底：默认 0.50（设计定，不可更大）。占比不少于此值时同步强制压缩一次。0=关闭。
+      // 紧急同步压缩兕底：默认 0.50（南南定，不可更大）。占比不少于此值时同步强制压缩一次。0=关闭。
       emergencySyncThreshold: asFloat(compaction.emergencySyncThreshold, 0.5),
       // drop 镜像：1-avgSim，默认 = 1-0.26 = 0.74，与 avgSim 切换线同义（纯展示，不独立判定，避免双阈值冲突）。
       dropThreshold: asFloat(compaction.dropThreshold, 0.74),

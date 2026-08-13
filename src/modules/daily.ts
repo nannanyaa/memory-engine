@@ -1,7 +1,7 @@
 /**
  * daily.ts — 定时落盘兜底（模块：enable_daily_digest）
  *
- * 核心落盘兜底（方案稿 A-落盘强制）：
+ * 南南核心落盘兜底（方案稿 A-落盘强制）：
  *   每日 cron -> 若当日 memory/YYYY-MM-DD.md 无落盘，生成一次"强制归档检查"
  *   + 索引完整性校验（扫描 memory/ 与 .index.jsonl 比对缺档）。
  *
@@ -87,7 +87,7 @@ function scanIndex(rt: RuntimeContext, ws: string): { missing: string[]; candida
 }
 
 // ---------------------------------------------------------------------------
-// 真自动落盘（全自动生成摘要草稿 + 自动登记 index）
+// 真自动落盘（南南 2026-08-10 拍板：全自动生成摘要草稿 + 自动登记 index）
 // ---------------------------------------------------------------------------
 
 /**
@@ -123,7 +123,7 @@ export async function ensureDailyPersist(rt: RuntimeContext): Promise<{
   );
   if (!res.ok) return { status: "write_failed", file, note: res.error };
 
-  // 自动登记 index（走全自动）
+  // 自动登记 index（南南：走全自动）
   await registerDailyIndex(rt, file, draft);
   rt.log.info(`[daily] auto-generated draft -> ${file}`);
   return { status: "auto_generated_draft", file };

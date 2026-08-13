@@ -1,7 +1,7 @@
 /**
  * compaction.ts — 事件感知上下文压缩引擎（模块：enable_context_compaction，默认关）
  *
- * 设计定算法（B 方向）：
+ * 南南拍板算法（B 方向）：
  *   主判据从前端轮余弦升级为「前段平均相似度 avgSim」：
  *     新轮 与 前段最近 K 轮 的平均余弦 avgSim；
  *     relevanceThreshold 作衬底（avgSim>=此值=明确同事件，绝不压）；
@@ -16,7 +16,7 @@
  *
  * 触发：
  *   - 主触发：话题切换（事件完成）
- *   - 次触发：上下文长度阈值兜底（lengthThreshold，设计定 0.22）
+ *   - 次触发：上下文长度阈值兜底（lengthThreshold，南南定 0.22）
  *     注（2026-08-09 修）：此前次触发只统计压缩窗口内字符，受 windowSize 上限约束对长会话永不达标，
  *     属死配置。已改为主路径 maybeCompressByRealLength —— 读 lcm 活跃会话实测 totalTokens，
  *     以「真实上下文 token / contextTokenBudget >= lengthThreshold」触发，真正按上下文长度收拢。
@@ -222,6 +222,9 @@ function encodeVector(v: number[]): string {
  *
  * @returns 旧话题压缩截止索引：返回所有非新轮（旧话题）应压缩的截止位置（=新轮在 allTurns 中的索引），
  *          供调用方 archive allTurns[0..cutoff)，保留 allTurns[cutoff..]（含新话题首轮）。无切换返回 -1。
+ * @param opts 可选参数（兼容旧调用）：`lastLowSim` 记录「上一次是否处于低相似候选但未确认」状态。
+ *          传入时启用「连续2次低相似才确认切换」的防误切语义（见 2026-08-13 三刀修复）；
+ *          不传则保持旧行为（单次低相似即切）。opts 为 in/out：函数会改写 lastLowSim。
  */
 export function detectTopicSwitch(
   newVec: number[],
@@ -233,6 +236,7 @@ export function detectTopicSwitch(
     internalRelevanceThreshold: number;
     minSamples: number;
   },
+  opts?: { lastLowSim: boolean },
 ): number {
   if (!newVec.length) return -1;
   if (allTurns.length < cfg.minSamples + 1) return -1;
@@ -246,17 +250,34 @@ export function detectTopicSwitch(
   // 真正的"无信号"只有 NaN（前段无有效向量时 avgSimToSegment 返回 1，恰不命中此处）。
   if (Number.isNaN(avgSim)) return -1; // 无有效前段向量，无信号
 
-  // 衬底：明确同事件 → 绝不压缩
-  if (avgSim >= cfg.relevanceThreshold) return -1;
-  // 主判据：未达切换线 → 不切换
-  if (avgSim > cfg.avgSimSwitchThreshold) return -1;
+  // 衬底：明确同事件 → 绝不压缩，复位 pending
+  if (avgSim >= cfg.relevanceThreshold) {
+    if (opts) opts.lastLowSim = false;
+    return -1;
+  }
+  // 主判据：未达切换线 → 不切换（正常话题内），复位 pending
+  if (avgSim > cfg.avgSimSwitchThreshold) {
+    if (opts) opts.lastLowSim = false;
+    return -1;
+  }
 
   // 软信号记录（不再阻断；保留 internal 计算以保持语义完整与可观测）
   void internalCoherence(prior, cfg.recentWindowForInternal);
   void cfg.internalRelevanceThreshold;
 
-  // 话题切换确认：新话题首轮 = 当前轮，旧话题=其前所有轮 → 全压，保留当前轮
-  return allTurns.length - 1;
+  // 【第3刀 · 2026-08-13】连续2次低相似才确认切换，防频繁误切。
+  // 病根：旧逻辑单次 avgSim<=threshold 即切换，今早 9 分钟被切成 6 次小批量（低语义相关被过度敏感触发）。
+  // 语义：单次低 sim 只是候选（置 pending 等待下一次确认）；
+  // 连续两次低 sim（上次 pending + 本次低 sim）才真正归档旧话题，保留当前轮。
+  if (opts && opts.lastLowSim) {
+    // 连续确认 → 真切换，并复位 pending
+    opts.lastLowSim = false;
+    // 话题切换确认：新话题首轮 = 当前轮，旧话题=其前所有轮 → 全压，保留当前轮
+    return allTurns.length - 1;
+  }
+  // 本次低 sim 但上次不是 → 标记 pending，本次暂不切
+  if (opts) opts.lastLowSim = true;
+  return -1;
 }
 
 /** 估算窗口累计字符对应的近似 token（粗略，1 token≈3 字符）。 */
@@ -291,7 +312,7 @@ function markCompressed(
 }
 
 // ---------------------------------------------------------------------------
-// 补1：超长输入的分段压缩再拼接（明确要求）
+// 补1：超长输入的分段压缩再拼接（南南 20:50 明确）
 // ---------------------------------------------------------------------------
 
 /**
@@ -679,16 +700,20 @@ async function runTurnInBackground(
   if (latest.length < 2) return;
 
   // 主触发：话题切换（avgSim 主判据）。传入含本轮在内的完整窗口，cutoff 即新话题首轮索引。
+  // 【第3刀】连续2次低相似才确认切换：pendingSwitch 记录每 session 上一次是否低 sim 待确认。
+  const pendingSwitch = { lastLowSim: pendingTopicSwitch.get(sessionKey) ?? false };
   const cutoff = detectTopicSwitch(vector ?? [], latest, {
     relevanceThreshold: cfg.compaction.relevanceThreshold,
     avgSimSwitchThreshold: cfg.compaction.avgSimSwitchThreshold,
     recentWindowForInternal: cfg.compaction.recentWindowForInternal,
     internalRelevanceThreshold: cfg.compaction.internalRelevanceThreshold,
     minSamples: cfg.compaction.minSamples,
-  });
+  }, pendingSwitch);
+  // 回写 pending 状态：detectTopicSwitch 已据本次判定改写 lastLowSim
+  pendingTopicSwitch.set(sessionKey, pendingSwitch.lastLowSim);
   if (cutoff >= 0) {
     rt.log.info(
-      `[compaction] topic switch detected at turn #${cutoff} (avgSim<=` +
+      `[compaction] topic switch confirmed (two consecutive low-sim) at turn #${cutoff} (avgSim<=` +
         `${cfg.compaction.avgSimSwitchThreshold}); archive old topic`,     );
     // window=latest 含新话题首轮；archive 会把 [0,cutoff) 作旧段压缩，保留 [cutoff..]（新话题首轮）
     archiveOldTopic(rt, sessionKey, latest, cutoff);
@@ -785,7 +810,7 @@ function maybeCompressByLength(
  *   长会话下窗口仅数百 token，除以 920k 的 contextTokenBudget 永远远小于 0.22 => 永不触发。
  *   改为读取真实会话上下文用量后，本路径成为真正按“上下文长度”生效的主诉据。
  *
- * 2026-08-09 根因修复（深挖）：
+ * 2026-08-09 根因修复（绫潇深挖）：
  *   旧 usedTokens 主来源是 rt.lcm.getActiveConversation(sessionKey).totalTokens（读 lossless 的 lcm.db）。
  *   “完整卸载 lossless”后 lcm.db 被删 → rt.lcm=null → usedTokens=0 → 退化窗口字符估算(≈0.03%) →
  *   0.22 永不触发（判据“瞎了”）。
@@ -795,7 +820,7 @@ function maybeCompressByLength(
  *     - 分母 budget      = ctx.contextTokenBudget（官方解析预算，与 web 面板那个百分比同源）。
  *   优先级：1) rt.contextUsage  >  2) lcm 会话实测（仍保留，lossless 在时可交叉校验）  >  3) 窗口字符估算（最后兜底）。
  *
- * 语义（设计定）：压掉最老段、保留 recentWindowForInternal 轮。
+ * 语义（南南拍板）：压掉最老段、保留 recentWindowForInternal 轮。
  */
 export function maybeCompressByRealLength(
   rt: RuntimeContext,
@@ -926,12 +951,15 @@ export async function forceCompress(
 }
 
 // ---------------------------------------------------------------------------
-// 启动回填：从现有会话历史初始化压缩窗口（设计定：一旦加载即能按现有上下文检测/触发压缩）
+// 启动回填：从现有会话历史初始化压缩窗口（南南要求：一旦加载即能按现有上下文检测/触发压缩）
 // ---------------------------------------------------------------------------
 
 // 已回填过的 session 标记（进程内）。回填幂等：只在首次触达时重建窗口，
 // 避免后续 message_received 清掉已累积的增量轮次。
 const backfilledSessions = new Set<string>();
+
+/** 【第3刀·连续确认】每 session 的「上一次低 sim 待确认」标记（进程内，per-sessionKey 隔离）。 */
+const pendingTopicSwitch = new Map<string, boolean>();
 
 /** 回填开关：进程内幂等。gateway_start 重新 init 后 new Set 为空，自然重新回填。 */
 export function shouldBackfillSession(sessionKey: string): boolean {
@@ -963,18 +991,19 @@ export function backfillCompactionWindow(
   }
   const cfg = rt.cfg;
   const db = rt.engineDb;
-  const targetKey = sessionKey || cfg.compaction.backfillSessionKey;
+  // 【第4刀 · 2026-08-13】回填目标改为「当前 session 自身 key」，不再回退到 backfillSessionKey 去读主会话历史。
+  // 病根：旧 targetKey = sessionKey || backfillSessionKey，而 backfillSessionKey 恒为 agent:main:main，
+  //      导致子代理/cron 回填时都去读主会话历史、塞 40 条空向量混入自身窗口。
+  //      现改为只回填当前 session 自己的历史（lcm 中无对应会话则跳过，不污染）。
+  const targetKey = sessionKey;
   const limit = cfg.compaction.backfillWindowSize;
   if (!targetKey || limit <= 0) return 0;
   // 幂等：每个 session 进程内只真正回填一次（后续触达不再重建窗口）
   if (!shouldBackfillSession(targetKey)) return 0;
 
   try {
-    // 找目标会话最新的一条活动 conversation（primary key 对应 agent:main:main 主会话）
-    const convInfo = rt.lcm.getActiveConversation(
-      targetKey,
-      cfg.compaction.backfillSessionKey,
-    );
+    // 找当前 session 最新的一条活动 conversation（不再 fallback 到主会话）
+    const convInfo = rt.lcm.getActiveConversation(targetKey);
     if (!convInfo) {
       rt.log.debug(`[compaction] no active conversation for backfill key=${targetKey}`);
       return 0;
@@ -985,7 +1014,9 @@ export function backfillCompactionWindow(
       return 0;
     }
 
-    // 重建窗口：清空后按序写回最近 limit 轮
+    // 重建窗口：清空后按序写回最近 limit 轮。
+    // 【第4刀】回填轮没有 embedding（encodeVector([]) 是空向量死数据），
+    //         标记 isLive=0（历史死档），避免与真实活轮（is_live=1）混同、被误当真实轮参与语义计算。
     db.clearCompactionTurns(sessionKey);
     rows.forEach((r, i) => {
       db.upsertCompactionTurn({
@@ -994,6 +1025,7 @@ export function backfillCompactionWindow(
         text: r.text,
         vector: encodeVector([]),
         tsMs: r.tsMs,
+        isLive: 0,
       });
     });
 

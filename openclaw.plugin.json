@@ -122,9 +122,84 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "minTurns": { "type": "integer", "minimum": 1, "default": 10 },
-          "minTimeWindows": { "type": "integer", "minimum": 1, "default": 2 },
-          "minTokens": { "type": "integer", "minimum": 1, "default": 30000 }
+          "minTurns": {
+            "type": "integer",
+            "minimum": 1,
+            "default": 15
+          },
+          "minTimeWindows": {
+            "type": "integer",
+            "minimum": 1,
+            "default": 3
+          },
+          "minTokens": {
+            "type": "integer",
+            "minimum": 1,
+            "default": 40000
+          }
+        }
+      },
+      "promotion": {
+        "description": "记忆晋升·价值判定配置（六维加权 + 硬门槛 + 绫潇终审），默认保守可标定",
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "scoreThreshold": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "default": 0.5,
+            "description": "六维 valueScore 硬门槛（量纲=六维加权分，与 confidence 不同坐标，勿混用）"
+          },
+          "weights": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "六维权重（合计 1.00）",
+            "properties": {
+              "relevance": { "type": "number", "default": 0.3 },
+              "consolidation": { "type": "number", "default": 0.24 },
+              "recency": { "type": "number", "default": 0.15 },
+              "frequency": { "type": "number", "default": 0.14 },
+              "queryDiversity": { "type": "number", "default": 0.1 },
+              "richness": { "type": "number", "default": 0.07 }
+            }
+          },
+          "trivialFilter": {
+            "type": "boolean",
+            "default": true,
+            "description": "直接剔琐事开关"
+          },
+          "funnelMaxPerTopic": {
+            "type": "integer",
+            "minimum": 1,
+            "default": 1,
+            "description": "同 topic 未 apply 前提案上限（提案节流）"
+          },
+          "strongReleaseConfidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "default": 0.8,
+            "description": "强放行例外：LLM 四类分类 confidence>=此值直接放行（量纲=confidence）"
+          },
+          "nightlyAutoApplyConfidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "default": 0.85,
+            "description": "夜间 high-conf 自动 apply 线（量纲=LLM 四类 confidence，与 scoreThreshold 分属不同坐标）"
+          },
+          "requireHumanReview": {
+            "type": "boolean",
+            "default": true,
+            "description": "绫潇终审闸门（true=默认人工终审；false=恢复全自动）"
+          },
+          "staleHours": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 24,
+            "description": "超时兜底小时数（滞留超此时长仍仅 apply conf>=0.85 项，其余继续等终审）"
+          }
         }
       },
       "emotion": {
@@ -132,11 +207,24 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "llmBaseUrl": { "type": "string" },
-          "llmModel": { "type": "string", "default": "openai/gpt-4o-mini" },
-          "llmApiKey": { "type": "string" },
-          "milestoneRequiresSecondPass": { "type": "boolean", "default": true },
-          "minCharsToClassify": { "type": "integer", "default": 0 }
+          "llmBaseUrl": {
+            "type": "string"
+          },
+          "llmModel": {
+            "type": "string",
+            "default": "openai/gpt-4o-mini"
+          },
+          "llmApiKey": {
+            "type": "string"
+          },
+          "milestoneRequiresSecondPass": {
+            "type": "boolean",
+            "default": true
+          },
+          "minCharsToClassify": {
+            "type": "integer",
+            "default": 0
+          }
         }
       },
       "vector": {
@@ -144,11 +232,22 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "dbPath": { "type": "string" },
-          "embeddingBaseUrl": { "type": "string" },
-          "embeddingModel": { "type": "string" },
-          "embeddingApiKey": { "type": "string" },
-          "topK": { "type": "integer", "default": 3 }
+          "dbPath": {
+            "type": "string"
+          },
+          "embeddingBaseUrl": {
+            "type": "string"
+          },
+          "embeddingModel": {
+            "type": "string"
+          },
+          "embeddingApiKey": {
+            "type": "string"
+          },
+          "topK": {
+            "type": "integer",
+            "default": 3
+          }
         }
       },
       "selfEvolve": {
@@ -156,9 +255,17 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "proposalDir": { "type": "string" },
-          "cronExpr": { "type": "string", "default": "0 3 * * *" },
-          "timezone": { "type": "string", "default": "Asia/Shanghai" }
+          "proposalDir": {
+            "type": "string"
+          },
+          "cronExpr": {
+            "type": "string",
+            "default": "0 3 * * *"
+          },
+          "timezone": {
+            "type": "string",
+            "default": "Asia/Shanghai"
+          }
         }
       },
       "dailyDigestCron": {
@@ -171,35 +278,105 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "windowSize": { "type": "integer", "minimum": 3, "default": 10 },
-          "relevanceThreshold": { "type": "number", "default": 0.3 },
-          "avgSimSwitchThreshold": { "type": "number", "default": 0.26 },
-          "lengthThreshold": { "type": "number", "default": 0.25 },
-          "dropThreshold": { "type": "number", "default": 0.74 },
-          "recentWindowForInternal": { "type": "integer", "minimum": 2, "default": 5 },
-          "internalRelevanceThreshold": { "type": "number", "default": 0.35 },
-          "minSamples": { "type": "integer", "minimum": 2, "default": 5 },
-          "contextTokenBudget": { "type": "integer", "minimum": 0, "default": 920000 },
-          "backfillWindowSize": { "type": "integer", "minimum": 0, "default": 40 },
-          "backfillSessionKey": { "type": "string", "default": "agent:main:main" },
-          "llmTimeoutMs": { "type": "integer", "default": 20000 },
-          "embeddingTimeoutMs": { "type": "integer", "default": 10000 },
-          "archiveDir": { "type": "string" },
-          "segmentChars": { "type": "integer", "minimum": 1000, "default": 5600 },
-          "maxSegmentsPerArchive": { "type": "integer", "minimum": 1, "default": 45 },
-          "maxQueue": { "type": "integer", "minimum": 1, "default": 100 },
-          "maxCompactionsPerMinute": { "type": "integer", "minimum": 0, "default": 6 },
-          "memoryHighWaterMB": { "type": "integer", "minimum": 0, "default": 512 },
-          "memoryPollMs": { "type": "integer", "minimum": 0, "default": 5000 },
+          "windowSize": {
+            "type": "integer",
+            "minimum": 3,
+            "default": 10
+          },
+          "relevanceThreshold": {
+            "type": "number",
+            "default": 0.3
+          },
+          "avgSimSwitchThreshold": {
+            "type": "number",
+            "default": 0.26
+          },
+          "lengthThreshold": {
+            "type": "number",
+            "default": 0.25
+          },
+          "dropThreshold": {
+            "type": "number",
+            "default": 0.74
+          },
+          "recentWindowForInternal": {
+            "type": "integer",
+            "minimum": 2,
+            "default": 5
+          },
+          "internalRelevanceThreshold": {
+            "type": "number",
+            "default": 0.35
+          },
+          "minSamples": {
+            "type": "integer",
+            "minimum": 2,
+            "default": 5
+          },
+          "contextTokenBudget": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 920000
+          },
+          "backfillWindowSize": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 40
+          },
+          "backfillSessionKey": {
+            "type": "string",
+            "default": "agent:main:main"
+          },
+          "llmTimeoutMs": {
+            "type": "integer",
+            "default": 20000
+          },
+          "embeddingTimeoutMs": {
+            "type": "integer",
+            "default": 10000
+          },
+          "archiveDir": {
+            "type": "string"
+          },
+          "segmentChars": {
+            "type": "integer",
+            "minimum": 1000,
+            "default": 5600
+          },
+          "maxSegmentsPerArchive": {
+            "type": "integer",
+            "minimum": 1,
+            "default": 45
+          },
+          "maxQueue": {
+            "type": "integer",
+            "minimum": 1,
+            "default": 100
+          },
+          "maxCompactionsPerMinute": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 6
+          },
+          "memoryHighWaterMB": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 512
+          },
+          "memoryPollMs": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 5000
+          },
           "summarizeRatioThreshold": {
             "type": "number",
             "default": 0.25,
-            "description": "assemble 摘要替换触发占比：messages估算token/tokenBudget >= 此值才折叠（超 25% 触发）"
+            "description": "assemble 摘要替换触发占比：messages估算token/tokenBudget >= 此值才折叠（南南拍板：超 25% 触发）"
           },
           "summarizeTargetRatio": {
             "type": "number",
             "default": 0.12,
-            "description": "压缩落点目标占比：超触发线后把上下文压回到此值（压到 12%，整体 15%~20% 波动）。替代旧 hardcode ×0.85"
+            "description": "压缩落点目标占比：超触发线后把上下文压回到此值（南南拍板：压到 12%，整体 15%~20% 波动）。替代旧 hardcode ×0.85"
           },
           "eventsRotateSizeBytes": {
             "type": "integer",
@@ -218,6 +395,26 @@
             "minimum": 200,
             "default": 1500,
             "description": "单条合成摘要块文本上限（字符，防把摘要又写爆）"
+          },
+          "emergencySyncThreshold": {
+            "type": "number",
+            "default": 0.5,
+            "minimum": 0,
+            "maximum": 0.6,
+            "description": "紧急同步压缩兜底阈值：上下文占比不低于此值(默认0.50，不可更大)时强制同步压缩一次，防上下文爆掉。0=关闭。"
+          },
+          "guardWindowMs": {
+            "type": "integer",
+            "default": 3000,
+            "minimum": 0,
+            "description": "【P0-会话活跃守卫】transcript 重写前的最小闲置毫秒数；会话活跃(距最后run < 此值)则跳过重写，等闲置再压。默认 3000。"
+          },
+          "promptEstimateCorrection": {
+            "type": "number",
+            "default": 0.7,
+            "minimum": 0.1,
+            "maximum": 1,
+            "description": "【过早触发修复】before_prompt_build 对完整 prompt 的 token 估算校正系数(<1=压低估算，贴近真实占比避免误触发)。默认0.7。实测估算比真实高约1.48x，0.7≈1/1.43。设1=不校正。"
           }
         }
       },

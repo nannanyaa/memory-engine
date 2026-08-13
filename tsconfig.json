@@ -13,14 +13,15 @@
     "noEmit": true,
     "types": ["node"],
     "typeRoots": [
-      "./node_modules/@types"
+      "./node_modules/@types",
+      "/mnt/mmc1-4/Configs/OpenClawMgr/global/lib/node_modules/openclaw/node_modules/@types"
     ],
     "paths": {
       "openclaw/*": [
-        "node_modules/openclaw/dist/*"
+        "/mnt/mmc1-4/Configs/OpenClawMgr/global/lib/node_modules/openclaw/dist/*"
       ],
       "typebox": [
-        "node_modules/typebox/build/index.d.mts"
+        "/mnt/mmc1-4/Configs/OpenClawMgr/global/lib/node_modules/openclaw/node_modules/typebox/build/index.d.mts"
       ]
     },
     "baseUrl": "."

@@ -55,11 +55,15 @@ export interface EngineDb {
     text: string;
     vector: string;
     tsMs: number;
+    isLive?: number;
   }): void;
   /** 事件感知压缩：读取 session 窗口（seq 升序）。 */
   listCompactionTurns(sessionKey: string): CompactionTurn[];
-  /** 事件感知压缩：清空 session 窗口。 */
-  clearCompactionTurns(sessionKey: string): void;
+  /** 事件感知压缩：清空 session 窗口。keepRecent=保留最近N条活轮; onlyArchived=只清已归档死档。 */
+  clearCompactionTurns(
+    sessionKey: string,
+    opts?: { keepRecent?: number; onlyArchived?: boolean },
+  ): void;
   /** 事件感知压缩：登记一次压缩/归档动作（审计。 */
   recordCompactionEvent(sessionKey: string, kind: string, detail: string): void;
   /** 事件感知压缩：查询某段已压缩内容是否压过（防内部重复压缩）。 */
@@ -99,6 +103,8 @@ export interface CompactionTurn {
   text: string;
   vector: string;
   tsMs: number;
+  /** 真实活轮=1；回填的历史轮=0（无 embedding，不参与语义计算）。 */
+  isLive: number;
 }
 
 /**
@@ -156,6 +162,8 @@ function migrate(db: DatabaseSync): void {
       text TEXT NOT NULL,
       vector TEXT NOT NULL,
       ts_ms INTEGER NOT NULL,
+      is_live INTEGER NOT NULL DEFAULT 1,
+      archived INTEGER NOT NULL DEFAULT 0,
       PRIMARY KEY (session_key, seq)
     );
     CREATE TABLE IF NOT EXISTS compaction_events (
@@ -179,6 +187,8 @@ function migrate(db: DatabaseSync): void {
   ensureColumn(db, "emotion_anchors", "last_preloaded_at", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn(db, "engagement", "preload_count", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn(db, "engagement", "last_preloaded_at", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(db, "compaction_turns", "is_live", "INTEGER NOT NULL DEFAULT 1");
+  ensureColumn(db, "compaction_turns", "archived", "INTEGER NOT NULL DEFAULT 0");
 }
 
 /** 幂等加列：列不存在才 ALTER TABLE ADD COLUMN。 */
@@ -399,28 +409,55 @@ class SqliteEngineDb implements EngineDb {
     text: string;
     vector: string;
     tsMs: number;
+    /** 是否真实活轮。0=回填的历史轮（无 embedding，is_live=0），默认 1=真实活轮。 */
+    isLive?: number;
   }): void {
+    const isLive = row.isLive ?? 1;
     this.db
       .prepare(
-        `INSERT INTO compaction_turns (session_key, seq, text, vector, ts_ms)
-         VALUES (?, ?, ?, ?, ?)
+        `INSERT INTO compaction_turns (session_key, seq, text, vector, ts_ms, is_live)
+         VALUES (?, ?, ?, ?, ?, ?)
          ON CONFLICT(session_key, seq) DO UPDATE SET
-           text=excluded.text, vector=excluded.vector, ts_ms=excluded.ts_ms`,
+           text=excluded.text, vector=excluded.vector, ts_ms=excluded.ts_ms, is_live=excluded.is_live`,
       )
-      .run(row.sessionKey, row.seq, row.text, row.vector, row.tsMs);
+      .run(row.sessionKey, row.seq, row.text, row.vector, row.tsMs, isLive);
   }
 
   listCompactionTurns(sessionKey: string): CompactionTurn[] {
     const rows = this.db
       .prepare(
-        `SELECT session_key, seq, text, vector, ts_ms AS tsMs FROM compaction_turns
+        `SELECT session_key, seq, text, vector, ts_ms AS tsMs, is_live AS isLive FROM compaction_turns
          WHERE session_key = ? ORDER BY seq ASC`,
       )
       .all(sessionKey);
     return rows as unknown as CompactionTurn[];
   }
 
-  clearCompactionTurns(sessionKey: string): void {
+  clearCompactionTurns(
+    sessionKey: string,
+    opts?: { keepRecent?: number; onlyArchived?: boolean },
+  ): void {
+    const keepRecent = opts?.keepRecent ?? 0;
+    const onlyArchived = opts?.onlyArchived ?? false;
+    if (keepRecent > 0) {
+      // 有条件清窗：只删"已归档(archived=1) 或 不在最近keepRecent条"的旧轮；保留最近真实活轮。
+      if (onlyArchived) {
+        this.db
+          .prepare(
+            `DELETE FROM compaction_turns WHERE session_key = ? AND archived = 1`,
+          )
+          .run(sessionKey);
+      } else {
+        // 保留最近 keepRecent 条真实轮(按 seq 降序取最新)，删更老的
+        this.db
+          .prepare(
+            `DELETE FROM compaction_turns WHERE session_key = ? AND seq < (SELECT seq FROM (SELECT seq FROM compaction_turns WHERE session_key = ? ORDER BY seq DESC LIMIT ?) ORDER BY seq ASC LIMIT 1)`,
+          )
+          .run(sessionKey, sessionKey, keepRecent);
+      }
+      return;
+    }
+    // 无 keepRecent = 无条件全清(兼容旧调用/bootstrap强制)
     this.db.prepare(`DELETE FROM compaction_turns WHERE session_key = ?`).run(sessionKey);
   }
 

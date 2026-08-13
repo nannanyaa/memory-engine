@@ -202,9 +202,15 @@ function createContextEngine(
       const rt = getRuntime();
       void params;
       if (!rt) return { bootstrapped: false, reason: "runtime-unavailable" };
-      // 清理该 session 的历史窗口（全新开场）
+      // B路解耦(2026-08-12 L3)：不再无条件清A路窗口。
+      // 改为只清"已归档死档(archived=1)"，保留最近 recentWindowForInternal 条真实活轮，
+      // 让A路(话题切换)能攒够 minSamples 真实轮判题，而非被B路轮换的清窗反复打空。
       try {
-        rt.engineDb?.clearCompactionTurns(params.sessionKey ?? params.sessionId);
+        const keep = rt.cfg.compaction.recentWindowForInternal ?? 5;
+        rt.engineDb?.clearCompactionTurns(
+          params.sessionKey ?? params.sessionId,
+          { keepRecent: keep, onlyArchived: true },
+        );
       } catch {
         /* ignore */
       }
@@ -450,8 +456,11 @@ export function reduceAndRewrite(input: ReduceAndRewriteInput): ReduceAndRewrite
     keepTokens -= t;
     keepTail = i;
   }
-  // 至少保留 4 条尾部消息，且不能全删。
-  keepTail = Math.max(4, Math.min(keepTail, msgs.length - 1));
+  // 至少保留 KEEP_TAIL_MIN 条尾部消息，且不能全删。
+  // 【第2刀 · 2026-08-13】旧下限只有 4，缩 transcript 会折叠到只剩 4 条尾消息，web 历史大量“已折叠”不可回看。
+  // 抬高下限（保留更多可回看尾部），减少“折叠太狠”副作用；msgs.length-1 上限仍守住不超总数。
+  const KEEP_TAIL_MIN = 40;
+  keepTail = Math.max(KEEP_TAIL_MIN, Math.min(keepTail, msgs.length - 1));
   // 手动模式：保留最尾 keepRecent 条（默认为自动算出的 keepTail），超出部分一并轮换掉
   if (typeof input.keepRecent === "number" && Number.isFinite(input.keepRecent) && input.keepRecent > 0) {
     const keepCapped = Math.max(4, Math.min(Math.floor(input.keepRecent), msgs.length - 4));

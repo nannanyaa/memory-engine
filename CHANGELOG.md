@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.0-beta.1] - 2026-08-13
+
+### ✨ 新增
+
+- **记忆晋升·价值判定层（六维打分 + 硬门槛 + 人工终审）**：`promoteCandidate` 前补一层价值判定——`computeValueScore` 六维加权打分（relevance 0.30 / consolidation 0.24 / recency 0.15 / 投入度 0.14 / 话题延续 0.10 / 概念富度 0.07），硬门槛 `valueScore≥0.50` 才进提案缓冲；新增"绫潇终审"混合闸门（nightlyReview 对 high-conf≥0.85 自动 apply、其余生成 `pending-*.review.md` 待审、24h 超时兜底）。彻底解决"高投入→直接塞提案"产出的流水账洪水。
+- **脏数据防护**：`distillToNarrative` LLM 不可用/失败时返回空、跳过落盘（禁止裸塞原文降级）；连续失败 ≥5 次触发 `distill_unavailable` 告警，防 LLM 静默挂导致全天无提案却误判无事。
+- **同话题提案收敛**：未 apply 前新增 `proposalConverge` 合并更新，防止同一话题逐轮重复洪水。
+
+### 🐛 修复
+
+- **压缩·连续确认机制**：`detectTopicSwitch` 新增可选 `opts.lastLowSim`，单次低相似只置 pending、连续两次才归档旧话题，调用方用模块级 `Map<sessionKey,bool>` 维护状态。治"短时间被切成多次小批量归档"的误切。
+- **压缩·回填污染**：回填目标改为只用当前 session 自身 key（去掉读主会话 fallback）；`upsertCompactionTurn` 新增 `isLive` 字段（回填轮 `isLive=0`），`compaction_turns` 表加 `is_live` 列。避免子代理/cron 回填时塞入 40 条主会话空向量。
+- **压缩·keepTail 抬高**：`reduceAndRewrite` 的 keepTail 下限 4 → `KEEP_TAIL_MIN=40`，治 transcript 折叠过狠导致 Web 历史消失。
+- **校正系数**：`promptEstimateCorrection` 从 1.0 改回 0.7，治面板占比与实际 token 估算不同口径导致"面板 30% 却误触发压缩"。
+
+---
+
 ## [0.2.0-beta.2] - 2026-08-11
 
 ### ✨ 新增
