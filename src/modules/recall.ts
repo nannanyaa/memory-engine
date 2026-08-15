@@ -46,7 +46,17 @@ export async function onBeforePromptBuild(
 
   // ② 场景激活锚点（聊到相关语境时）—— 生命周期同①；并在块内去重（跳过已出现在固定块里的同一句）。
   const fixedTexts = new Set(fixedAnchors.map((a) => a.text));
-  const promptText = event.prompt ?? "";
+  // C：高投入主题并入场景匹配文本——聊到某深入话题时，把主题名也喂给场景扫描，
+  //    让相关情感锚点通过“当前高频话题”联动唤起（不再只靠 prompt 字面命中的泛用情绪词）。
+  const engagTopics = db
+    .listHighEngagement({
+      minTurns: rt.cfg.engagement.minTurns,
+      minTimeWindows: rt.cfg.engagement.minTimeWindows,
+      minTokens: rt.cfg.engagement.minTokens,
+    })
+    .map((h) => h.topic)
+    .join(" ");
+  const promptText = `${event.prompt ?? ""} ${engagTopics}`.trim();
   const scenario = db
     .listScenarioAnchors(promptText, 3)
     .filter((a) => {

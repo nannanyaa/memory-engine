@@ -260,11 +260,21 @@ class SqliteEngineDb implements EngineDb {
   }
 
   listActiveAnchors(limit = 8): EmotionAnchor[] {
-    return this.db
+    // 按 text 去重：同文本的 fixed+scenario 双轨只返回最新/最高权重一条，避免同一句在固定块里重复注入。
+    const rows = this.db
       .prepare(
-        `SELECT * FROM emotion_anchors WHERE active=1 ORDER BY milestone DESC, id DESC LIMIT ?`,
+        `SELECT * FROM emotion_anchors WHERE active=1 ORDER BY milestone DESC, id DESC LIMIT 400`,
       )
-      .all(limit) as unknown as EmotionAnchor[];
+      .all() as unknown as EmotionAnchor[];
+    const seen = new Set<string>();
+    const deduped: EmotionAnchor[] = [];
+    for (const a of rows) {
+      if (seen.has(a.text)) continue;
+      seen.add(a.text);
+      deduped.push(a);
+      if (deduped.length >= limit) break;
+    }
+    return deduped;
   }
 
   /** 场景激活：检索文本命中 scenario_hints 的锚点（双轨之"场景激活"轨）。 */
