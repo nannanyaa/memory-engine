@@ -140,7 +140,7 @@
         }
       },
       "promotion": {
-        "description": "记忆晋升·价值判定配置（六维加权 + 硬门槛 + 绫潇终审），默认保守可标定",
+        "description": "记忆晋升·价值判定配置（六维加权 + 硬门槛 + 终审），默认保守可标定",
         "type": "object",
         "additionalProperties": false,
         "properties": {
@@ -192,7 +192,7 @@
           "requireHumanReview": {
             "type": "boolean",
             "default": true,
-            "description": "绫潇终审闸门（true=默认人工终审；false=恢复全自动）"
+            "description": "终审闸门（true=默认人工终审；false=恢复全自动）"
           },
           "staleHours": {
             "type": "integer",
@@ -371,12 +371,12 @@
           "summarizeRatioThreshold": {
             "type": "number",
             "default": 0.25,
-            "description": "assemble 摘要替换触发占比：messages估算token/tokenBudget >= 此值才折叠（南南拍板：超 25% 触发）"
+            "description": "assemble 摘要替换触发占比：messages估算token/tokenBudget >= 此值才折叠（经拍板：超 25% 触发）"
           },
           "summarizeTargetRatio": {
             "type": "number",
             "default": 0.12,
-            "description": "压缩落点目标占比：超触发线后把上下文压回到此值（南南拍板：压到 12%，整体 15%~20% 波动）。替代旧 hardcode ×0.85"
+            "description": "压缩落点目标占比：超触发线后把上下文压回到此值（经拍板：压到 12%，整体 15%~20% 波动）。替代旧 hardcode ×0.85"
           },
           "eventsRotateSizeBytes": {
             "type": "integer",

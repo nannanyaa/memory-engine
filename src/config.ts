@@ -3,7 +3,51 @@
  *
  * 每个功能模块独立 enable_* 开关，默认全部 false。
  * 路径类配置默认取 gateway_start 的 ctx.workspaceDir / stateDir 解析后的实际值。
+ *
+ * 敏感/个性化配置（API 密钥、embedding、关键词等）不硬编码，
+ * 走外部本地配置 memory-engine.local.config.json（自动创建模板，见 loadLocalConfig）。
  */
+
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { join, dirname } from "node:path";
+
+/** 本地外部配置文件名（工作区根目录下，不进 git）。 */
+export const LOCAL_CONFIG_FILENAME = "memory-engine.local.config.json";
+
+/**
+ * 读取工作区额外本地配置（密钥/embedding/关键词等敏感项）。
+ * 不存在则自动创建空白模板供用户填写；存在则用已有值。
+ * 返回空对象表示无额外配置（用代码默认值）。
+ */
+export function loadLocalConfig(
+  workspaceDir?: string,
+): Record<string, unknown> {
+  if (!workspaceDir) return {};
+  const p = join(workspaceDir, LOCAL_CONFIG_FILENAME);
+  try {
+    if (!existsSync(p)) {
+      mkdirSync(dirname(p), { recursive: true });
+      // 自动创建空白模板，带注释引导用户填写
+      const tmpl = {
+        _comment: "memory-engine 本地外部配置（敏感/个性化项）。不入 git。\n请填写你自己的内容后保存，插件会自动读取。\n若留空则用代码内默认值（多数为空/安全默认）。",
+        emotion: { llmBaseUrl: "", llmModel: "", llmApiKey: "" },
+        vector: {
+          embeddingBaseUrl: "",
+          embeddingModel: "",
+          embeddingApiKey: "",
+        },
+        keywords: {},
+      };
+      writeFileSync(p, JSON.stringify(tmpl, null, 2), "utf8");
+    }
+    const raw = readFileSync(p, "utf8");
+    const parsed = JSON.parse(raw);
+    return typeof parsed === "object" && parsed !== null ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
 
 export interface MemoryEngineConfig {
   // —— 模块独立开关（全默认 false）——
@@ -30,6 +74,7 @@ export interface MemoryEngineConfig {
   injectTag: string;
   injectMaxChars: number;
   rollbackBackupDir: string;
+  keywordsPath: string;
 
   // —— 记忆引擎 B 投入度阈值 ——
   engagement: {
@@ -38,7 +83,7 @@ export interface MemoryEngineConfig {
     minTokens: number;
   };
 
-  // —— 记忆晋升 · 价值判定（2026-08-13 南南拍板：六维加权 + 硬门槛 + 绫潇终审） ——
+  // —— 记忆晋升 · 价值判定（2026-08-13 拍板：六维加权 + 硬门槛 + 终审） ——
   // 量纲约定（知安 C3）：
   //   scoreThreshold（0.50） = 六维 valueScore（0~1 加权分）
   //   strongReleaseConfidence（0.80）/ nightlyAutoApplyConfidence（0.85） = LLM 四类分类 confidence（另一坐标）
@@ -57,7 +102,7 @@ export interface MemoryEngineConfig {
     funnelMaxPerTopic: number;         // 同 topic 未 apply 前提案上限，默认 1
     strongReleaseConfidence: number;   // 强放行例外：conf≥此值(LLM分类置信度)放行，默认 0.80
     nightlyAutoApplyConfidence: number; // 夜间 high-conf 自动 apply 线(LLM分类置信度)，默认 0.85
-    requireHumanReview: boolean;       // 绫潇终审闸门，默认 true
+    requireHumanReview: boolean;       // 终审闸门，默认 true
     staleHours: number;                // 24h 超时兜底（未审滞留时长），默认 24
   };
 
@@ -117,8 +162,8 @@ export interface MemoryEngineConfig {
     windowSize: number; // 相关性打分滑动窗口（前 N 轮，默认 10）
     relevanceThreshold: number; // 衬底：avgSim>=此值判定明确同事件、不压缩（实测话题内中位≈0.345，取 0.30 保护多数话题内轮）
     avgSimSwitchThreshold: number; // 主判据切换线：avgSim<=此值判话题切换（实测边界中位≈0.24、最优判别点≈0.26）
-    lengthThreshold: number; // 上下文长度阈值兜底（南南定 0.20=20%），超则压缩。用于常规后台压缩触发线。
-    emergencySyncThreshold: number; // 紧急同步压缩兜底阈值（南南定默认 0.50，不可更大）。上下文占比不低于此值时，强制同步压缩一次，防上下文爆掉。0=关闭。
+    lengthThreshold: number; // 上下文长度阈值兜底（定 0.20=20%），超则压缩。用于常规后台压缩触发线。
+    emergencySyncThreshold: number; // 紧急同步压缩兜底阈值（定默认 0.50，不可更大）。上下文占比不低于此值时，强制同步压缩一次，防上下文爆掉。0=关闭。
     dropThreshold: number; // avgSim 切换线的 drop 镜像视图：drop=1-avgSim>=此值 等价于 avgSim<=切换线（保持单向、纯展示）
     recentWindowForInternal: number; // 前段窗口（avgSim 取最近几轮，同时作内部相关软信号窗口）
     internalRelevanceThreshold: number; // 近轮内部相关软信号（判别力弱，不再硬性门槛；仅辅助，防哑火）
@@ -133,7 +178,7 @@ export interface MemoryEngineConfig {
      * 0=关闭（仅按运行时实测基底 + 会话消息估算）。不精确，需按真实工具集调校。
      */
     contextToolOverheadTokens: number;
-    /** 启动时从现有会话历史回填窗口的最多轮数（南南要求：一旦加载即能按现有上下文检测压缩）。 */
+    /** 启动时从现有会话历史回填窗口的最多轮数（要求：一旦加载即能按现有上下文检测压缩）。 */
     backfillWindowSize: number;
     /** 回填时用于识别主会话的 session_key（如 agent:main:main）。空则跳过回填。 */
     backfillSessionKey: string;
@@ -168,7 +213,7 @@ export interface MemoryEngineConfig {
     summarizeMaxChars: number;
     /**
      * 方案 A：压缩落点目标占比（锯齿形：超 summarizeRatioThreshold 触发 → 压回到此值）。
-     * 南南拍板：触发线 0.30、落点 0.15（Web 端"已用/预算"上下文占比据此压缩）。默认 0.15。
+     * 拍板：触发线 0.30、落点 0.15（Web 端"已用/预算"上下文占比据此压缩）。默认 0.15。
      */
     summarizeTargetRatio: number;
   };
@@ -199,6 +244,12 @@ export function normalizeConfig(
 ): MemoryEngineConfig {
   const rawCfg = (raw ?? {}) as Record<string, unknown>;
   const workspaceDir = asString(rawCfg.workspaceDir) || env.workspaceDir;
+  // 敏感/个性化配置（密钥/embedding/关键词）从工作区本地外部配置读取（自动创建模板）
+  const localCfg = loadLocalConfig(workspaceDir) as Record<string, unknown>;
+  const localEmotion = asObj((localCfg as Record<string, unknown>).emotion);
+  const localVector = asObj((localCfg as Record<string, unknown>).vector);
+  const rawEmotion = asObj(rawCfg.emotion);
+  const rawVector = asObj(rawCfg.vector);
   const stateDir = env.stateDir || workspaceDir;
 
   const engagement = asObj(rawCfg.engagement);
@@ -228,6 +279,7 @@ export function normalizeConfig(
     injectMaxChars: asInt(rawCfg.injectMaxChars, 1200),
     rollbackBackupDir:
       asString(rawCfg.rollbackBackupDir) || `${stateDir}/.memory-engine-rollback`,
+    keywordsPath: asString(rawCfg.keywordsPath) || "",
 
     engagement: {
       minTurns: asInt(engagement.minTurns, 15),
@@ -259,9 +311,18 @@ export function normalizeConfig(
     },
 
     emotion: {
-      llmBaseUrl: asString(emotion.llmBaseUrl) || "",
-      llmModel: asString(emotion.llmModel) || "openai/gpt-4o-mini",
-      llmApiKey: asString(emotion.llmApiKey) || "",
+      llmBaseUrl:
+        asString(rawEmotion.llmBaseUrl) ||
+        asString(localEmotion.llmBaseUrl) ||
+        "",
+      llmModel:
+        asString(rawEmotion.llmModel) ||
+        asString(localEmotion.llmModel) ||
+        "openai/gpt-4o-mini",
+      llmApiKey:
+        asString(rawEmotion.llmApiKey) ||
+        asString(localEmotion.llmApiKey) ||
+        "",
       milestoneRequiresSecondPass: asBool(emotion.milestoneRequiresSecondPass, true),
       minCharsToClassify: asInt(emotion.minCharsToClassify, 0),
       // —— 13 维新增（asNumber 不存在，按二审改用 asFloat）——
@@ -270,11 +331,20 @@ export function normalizeConfig(
     },
 
     vector: {
-      dbPath: asString(vector.dbPath) || `${stateDir}/memory-engine-vector`,
-      embeddingBaseUrl: asString(vector.embeddingBaseUrl) || "",
-      embeddingModel: asString(vector.embeddingModel) || "embedding-2",
-      embeddingApiKey: asString(vector.embeddingApiKey) || "",
-      topK: asInt(vector.topK, 3),
+      dbPath: asString(rawVector.dbPath) || `${stateDir}/memory-engine-vector`,
+      embeddingBaseUrl:
+        asString(rawVector.embeddingBaseUrl) ||
+        asString(localVector.embeddingBaseUrl) ||
+        "",
+      embeddingModel:
+        asString(rawVector.embeddingModel) ||
+        asString(localVector.embeddingModel) ||
+        "embedding-2",
+      embeddingApiKey:
+        asString(rawVector.embeddingApiKey) ||
+        asString(localVector.embeddingApiKey) ||
+        "",
+      topK: asInt(rawVector.topK, 3),
     },
 
     selfEvolve: {
@@ -294,7 +364,7 @@ export function normalizeConfig(
       // 主判据切换线：avgSim<=此值判话题切换。标定：纯 avgSim 最优 F1≈0.50 @0.26（召回 5/8 边界、误报 7/73≈10%）。
       avgSimSwitchThreshold: asFloat(compaction.avgSimSwitchThreshold, 0.26),
       lengthThreshold: asFloat(compaction.lengthThreshold, 0.2),
-      // 紧急同步压缩兕底：默认 0.50（南南定，不可更大）。占比不少于此值时同步强制压缩一次。0=关闭。
+      // 紧急同步压缩兕底：默认 0.50（定，不可更大）。占比不少于此值时同步强制压缩一次。0=关闭。
       emergencySyncThreshold: asFloat(compaction.emergencySyncThreshold, 0.5),
       // drop 镜像：1-avgSim，默认 = 1-0.26 = 0.74，与 avgSim 切换线同义（纯展示，不独立判定，避免双阈值冲突）。
       dropThreshold: asFloat(compaction.dropThreshold, 0.74),

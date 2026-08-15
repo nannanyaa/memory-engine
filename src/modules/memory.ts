@@ -9,7 +9,7 @@
  *   任一超标 -> 标记为高投入事项。换话题后新段从低位起计，不顶着旧 topic 累计。
  *   高投入 -> 自动登记当天 notes + 生成"待提拔"候选，写入 engine-db。
  *
- * ─── hotfix 说明（南南 8/9 现场抓到，priority 高） ───────────────────────────
+ * ─── hotfix 说明（8/9 现场抓到，priority 高） ───────────────────────────
  * 原 bug：topic=频道（"agent:main:qqbot"→"main:qqbot"），轮次=event.messages.length
  *   = 整场消息总数。同一频道换语义话题不换签名 -> 全算同一个 topic，轮次从 1 一路涨
  *   （实测 main:main 到 111 轮 / token 675786）。A 轨(>=minTurns)判断完全失真。
@@ -284,7 +284,7 @@ function estimateTokens(messages: string[]): number {
 export { windowOf };
 
 // ────────────────────────────────────────────────────────────────────────────
-// 投入度晋升闭环（南南 2026-08-10 授命自动合并，写前必过自审防语义漂移）
+// 投入度晋升闭环（2026-08-10 授命自动合并，写前必过自审防语义漂移）
 // ────────────────────────────────────────────────────────────────────────────
 
 export interface PromotionCandidate {
@@ -339,7 +339,7 @@ function resetDistillStreak(): void {
 const SEG_NO_RE = /s(\d+)(?:$|\b)/;
 
 /**
- * 晋升管线主体（3A，南南精确：记“事”不记“话”）——【晋升价值改造】迭代版：
+ * 晋升管线主体（3A，精确：记“事”不记“话”）——【晋升价值改造】迭代版：
  *   蒸馏出【事项/完成度/后续/关键节点】框架 -> 价值判定(四类:决策/结果/文件变更/任务状态)
  *   -> 琐事过滤 -> 跨多时段+事件信号必晋升 -> 写前自审 -> 归档判定 -> 追加合并。
  * 蒸馏失败/无 LLM -> 返回空串（不落盘、不降级塞原文）；原文留在 lossless 无损层可召回。
@@ -359,11 +359,11 @@ export async function promoteCandidate(
     return { status: "distill_unavailable" };
   }
 
-  // 0.5)【晋升价值改造】价值判定：六维加权打分 + 硬门槛（南南 2026-08-13 拍板）。
+  // 0.5)【晋升价值改造】价值判定：六维加权打分 + 硬门槛(2026-08-13 拍板)。
   //     高投入只给“候选资格”，valueScore>=0.50 才给“过门资格”，两者都过才落提案缓冲。
   const value = await judgePromotionValue(rt, candidate, narrative);
   if (value.boost) {
-    // 跨多时段 + 事件/节点信号：提升为“必晋升”优先级（南南：把跨多天大项目/重要进展落长期记忆）。
+    // 跨多时段 + 事件/节点信号：提升为“必晋升”优先级（把跨多天大项目/重要进展落长期记忆）。
     rt.log.info(
       `[memory] cross-window boost: ${candidate.source} windows=${candidate.engagement?.timeWindowCount ?? 0}`,
     );
@@ -377,7 +377,7 @@ export async function promoteCandidate(
     return { status: "filtered", reason: value.reason };
   }
 
-  // 1) 写前自审：LLM 比对“蒸馏后框架 vs 待写入事实”，防语义漂移（保留南南 8/10 要求）。
+  // 1) 写前自审：LLM 比对“蒸馏后框架 vs 待写入事实”，防语义漂移（保留 8/10 要求）。
   const selfCheck = await selfAudit(rt, narrative);
   if (!selfCheck.consistent) {
     rt.log.warn(`[memory] promote needs_review: ${selfCheck.reason}`);
@@ -389,7 +389,7 @@ export async function promoteCandidate(
   const target = isUser ? userPath(rt.workspaceDir) : memoryPath(rt.workspaceDir);
 
   // 3)【记忆晋升·提案模式】不再直接写 MEMORY/USER.md，而是写成独立提案文件，
-  //    待夜间人工终审后才真正晋升（南南 8/11 + 8/13 定：避免垃圾直接进长期记忆）。
+  //    待夜间人工终审后才真正晋升（8/11 + 8/13 定：避免垃圾直接进长期记忆）。
   //    提案块含目标 target + 蒸馏框架 narrative + 价值分 score + 来源，供夜间待审。
   const propDir = rt.cfg.selfEvolve.proposalDir || `${rt.workspaceDir}/.rules/memory-engine-proposals`;
   const propFile = join(propDir, "promotion", `pending-${toISODate(Date.now())}.md`);
@@ -439,7 +439,7 @@ export async function promoteCandidate(
 /**
  * 【记忆晋升 · 提案模式 · 终审闸门】夜间处理：
  * 读取 <proposalDir>/promotion/pending-*.md 里的晋升提案，不再自动 apply，改为：
- *   1. 生成 pending-<date>.review.md 待审清单（提案# / 目标 / 蒸馏框架一句话 / 价值分 / LLM conf / 来源）供绫潇/南南终审。
+ *   1. 生成 pending-<date>.review.md 待审清单（提案# / 目标 / 蒸馏框架一句话 / 价值分 / LLM conf / 来源）供终审。
  *   2. 仅 high-conf（LLM 四类分类 confidence >= nightlyAutoApplyConfidence(0.85)）自动 apply；
  *      其余滞留待审（不自动全审，防垃圾进长期记忆）。
  *   3. 24h 超时兜底：滞留超 staleHours 的硬 pass 高置信项仍只 apply conf>=0.85，其余继续等终审。
@@ -534,12 +534,12 @@ export async function applyPendingPromotions(rt: RuntimeContext): Promise<{ appl
     }
   }
 
-  // 生成待审清单（绫潇终审闸门）：无论是否有 high-conf，都产出 review.md 供人复审。
+  // 生成待审清单（终审闸门）：无论是否有 high-conf，都产出 review.md 供人复审。
   if (reviewLines.length) {
     const reviewFile = join(propDir, `pending-${toISODate(Date.now())}.review.md`);
     const header =
       `# 记忆晋升·待审清单 · ${toISODate(Date.now())}\n\n` +
-      `> 本清单由记忆引擎夜间汇总，供绫潇/南南终审。\n` +
+      `> 本清单由记忆引擎夜间汇总，供终审。\n` +
       `> high-conf(LLM 四类 confidence>=${prom.nightlyAutoApplyConfidence}) 已自动 apply；其余滞留待审。\n` +
       `> 驳回项请标注 rejected 或移入 applied/ 归档。\n` +
       `> 【量纲】score=六维 valueScore(门槛 ${prom.scoreThreshold})；llm_conf=LLM 四类分类置信度(自动 apply 线 ${prom.nightlyAutoApplyConfidence})。\n`;
@@ -686,7 +686,7 @@ const TRIVIAL_SIGNAL_RE =
   /(?:重启对话|重启会话|开始新一轮|确认状态|确认一下|调整状态|闲聊|寒暄|打个招呼|打招呼|你好吗|早安|晚安|拜拜|再见|好的|收到|了解|在吗|你还在吗|ok|好的呢|知道了)/i;
 
 /**
- * 【晋升价值改造】六维加权打分 + 硬门槛（南南 2026-08-13 拍板）。
+ * 【晋升价值改造】六维加权打分 + 硬门槛(2026-08-13 拍板)。
  *
  * 高投入（engagement）只给“候选资格”，valueScore 决定“过门资格”。
  * 流程：
@@ -765,7 +765,7 @@ async function judgePromotionValue(
 
 /**
  * 六维加权打分核心（纯本地 + 复用 LLM 四类判定）。
- * 权重（书微方案，合计 1.00，南南拍板）：
+ * 权重（书微方案，合计 1.00，拍板）：
  *   relevance 0.30 / consolidation 0.24 / recency 0.15 / frequency 0.14 /
  *   queryDiversity 0.10 / richness 0.07
  * LLM 不可用时不阻塞：relevance/consolidation 降级用信号词与去重；其余维度纯本地。
@@ -825,7 +825,7 @@ async function computeValueScore(
 
   // 6) richness（概念富度）0.07：叙事长度 + 含数字/人名/时间。
   const hasNumber = /\d/.test(narrative);
-  const hasName = /[A-Za-z\u4e00-\u9fa5]{2,}(?:项目|模块|平台|功能|方案|系统)/.test(narrative) || /(?:用户|主人|殿下|南南|绫潇)/.test(narrative);
+  const hasName = /[A-Za-z\u4e00-\u9fa5]{2,}(?:项目|模块|平台|功能|方案|系统)/.test(narrative) || /(?:用户|主人|殿下|老板|人类用户)/.test(narrative);
   const lengthScore = Math.min(1, narrative.length / 400);
   const richness = (hasNumber ? 0.4 : 0) + (hasName ? 0.3 : 0) + lengthScore * 0.3;
 
@@ -944,7 +944,7 @@ async function classifyFourCategory(
   }
 }
 
-/** 按南南定稿的叙事框架模板排版落盘条目。 */
+/** 按定稿的叙事框架模板排版落盘条目。 */
 function buildNarrativeBlock(
   date: string,
   source: string,
@@ -974,7 +974,7 @@ function isPromotionDeduped(rt: RuntimeContext, c: PromotionCandidate): boolean 
   }
 }
 
-/** 自审：保证写入内容与真实认知一致（南南 8/10 明确要求）。 */
+/** 自审：保证写入内容与真实认知一致（8/10 明确要求）。 */
 async function selfAudit(rt: RuntimeContext, text: string): Promise<{ consistent: boolean; reason: string }> {
   const p = `你是记忆引擎的“写前自审员”。以下是要写入记忆档案的内容，请判断：它是否与事实一致？有无“把印象当事实/情绪宣泄当事实/夸张”的情况？
 内容: ${text.slice(0, 2000)}

@@ -54,7 +54,7 @@ export function registerHooks(api: OpenClawPluginApi, log: Logger): void {
       // 事件感知压缩引擎：B 路 contextEngine（仅当开关开启时注册；接管需另设 slots.contextEngine）
       registerContextEngineIfEnabled();
 
-      // 南南核心要求：启动即从现有会话历史回填压缩窗口，检测上下文长度并触发压缩。
+      // 核心要求：启动即从现有会话历史回填压缩窗口，检测上下文长度并触发压缩。
       // 不回填就永远从"插件加载后第一条消息"才开始计数，导致已超阈值也不压缩。
       if (isModuleEnabled(rt.cfg, "enable_context_compaction")) {
         try {
@@ -80,7 +80,7 @@ export function registerHooks(api: OpenClawPluginApi, log: Logger): void {
     { priority: 100 },
   );
 
-  // 启动即回填：把现有会话历史灌入压缩窗口（南南：一旦加载即按现有上下文检测压缩）。
+  // 启动即回填：把现有会话历史灌入压缩窗口（一旦加载即按现有上下文检测压缩）。
   // 在 gateway_start 先回填一次主会话；运行时首次 message_received/agent_end 再按真实 key 幂等重建。
   const ensureBackfill = (rt: import("./runtime.js").RuntimeContext, sessionKey: string) => {
     const k = sessionKey && sessionKey.length ? sessionKey : rt.cfg.compaction.backfillSessionKey;
@@ -254,7 +254,7 @@ function startIntervalFallback(rt: import("./runtime.js").RuntimeContext): void 
   const maybeDigest = async () => {
     const r = getRuntime();
     if (!r) return;
-    // 每 6h 检查一次今日落盘（兜底）；未落盘则全自动生成摘要草稿（南南全自动拍板）
+    // 每 6h 检查一次今日落盘（兜底）；未落盘则全自动生成摘要草稿（全自动拍板）
     if (isModuleEnabled(r.cfg, "enable_daily_digest")) {
       try {
         await ensureDailyPersist(r);

@@ -25,3 +25,8 @@ lcm.db
 # Local config / secrets
 .env
 .env.*
+
+# 本地敏感/个性化配置（不进 git，运行自动生成模板）
+keywords.json
+memory-engine.keywords.json
+memory-engine.local.config.json

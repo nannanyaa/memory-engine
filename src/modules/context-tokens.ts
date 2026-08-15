@@ -1,5 +1,5 @@
 /**
- * context-tokens.ts — 真实上下文 token 用量捕获（脱离 lcm.db 的主判据，2026-08-09 绫潇深挖根因）
+ * context-tokens.ts — 真实上下文 token 用量捕获（脱离 lcm.db 的主判据，2026-08-09 深挖根因）
  *
  * 根因（决定性）：maybeCompressByRealLength 旧的 usedTokens 主来源是 rt.lcm.getActiveConversation()
  *   （读 lossless 的只读库 lcm.db）。"完整卸载 lossless"后 lcm.db 被删 → rt.lcm=null → usedTokens=0

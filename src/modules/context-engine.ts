@@ -8,7 +8,7 @@
  * 接管方式：registerContextEngine(id, factory)，然后由配置 plugins.slots.contextEngine = 本引擎 id 生效。
  * —— 硬性约束：不改 slots.contextEngine 实际值（当前仍为 lossless-claw），
  *    因此本模块注册即使开启 enable_context_compaction 也不会接管（safe, deferred）。
- *    真正接管由南南确认后单独改配置 + 重启。
+ *    真正接管由确认后单独改配置 + 重启。
  *
  * 设计：与 A 路（compaction.ts）共享向量窗口/事件检测/归档能力。
  *   - ingest: 把消息投入后台窗口（不阻塞）。
@@ -1033,7 +1033,7 @@ async function distillInBackground(
 
 /**
  * 方案 A：压缩落点目标占比（锯齿形：超 lengthThreshold 触发 → 压回到 target）。
- * 南南拍板：触发线 0.25、落点 0.12（整体在 15%~20% 波动）。
+ * 拍板：触发线 0.25、落点 0.12（整体在 15%~20% 波动）。
  * target 取配置 summarizeTargetRatio（默认 0.12），缺失回退×0.85 可回滚。
  * 落点必须严格 < 触发线，`threshold - 0.01` 保险防止配置误设≥触发线导致死循环压缩。
  * 返回 [0.05, min(target, threshold-0.01)]。

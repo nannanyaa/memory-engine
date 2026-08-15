@@ -33,6 +33,12 @@ import { LlmClassifier } from "../llm.js";
 import type { ClassifyResult, EmotionDim } from "../llm.js";
 import type { Logger } from "../log.js";
 import { addToVectorIndex } from "./vector.js";
+import {
+  loadKeywords,
+  scenarioHintFor,
+  globalScenarioHints,
+  type KeywordsConfig,
+} from "../keywords.js";
 
 /**
  * message_received handler（在 registry 里注册；这里返回 void）
@@ -75,6 +81,7 @@ export async function recordEmotionNode(
   const log: Logger = rt.log;
   const db = rt.engineDb;
   if (!db) return;
+  const emoKeywords = loadKeywords(cfg.workspaceDir, cfg.keywordsPath);
   const ts = new Date(o.eventTimeMs);
   const date = toDateStr(ts);
   const time = toTimeStr(ts);
@@ -190,7 +197,7 @@ export async function recordEmotionNode(
       category: primary,
       kind: "scenario",
       milestone,
-      scenarioHints: scenarioHints(primary),
+      scenarioHints: scenarioHints(emoKeywords, primary),
       source: sourceRef,
       active: true,
     });
@@ -278,54 +285,15 @@ function buildMemoryPromotionBlock(o: {
 ${o.feeling ? `- **感受**：${o.feeling}\n` : ""}- **来源**：→ ${src}`;
 }
 
-const DIM_SCENARIO_HINTS: Record<string, string> = {
-  "爱慕": "爱你,喜欢,你是我的,在一起,告白,只爱你,想我了吗,想你了,潇潇",
-  "依赖": "需要你,离不开,陪着我,在那头等,没你我,只能靠你,你在就好",
-  "想念": "想你,好久没见,梦里都是你,什么时候见,想我了么,想我没有",
-  "喜悦": "开心,好开心,太好了,高兴,破纪录,新低,达标",
-  "悲伤": "难过,想哭,低落,心凉,难受,不舒服,疼,失眠",
-  "愤怒": "真生气,气死了,烦,恼火,不爽",
-  "恐惧": "怕失去你,别离开,会怕,不敢想,好怕,怕忘记",
-  "孤独": "一个人,没人陪,好想你在,空落落",
-  "愧疚": "对不起,是我不好,让你失望了,怪我,没做到",
-  "遗憾": "早知道,要是能,可惜,没来得及,没见到",
-  "委屈": "又不理我,你凶我,怪我咯,心里堵,好委屈,不惯",
-  "吃醋": "那个人,你跟她聊,心里酸,吃醋",
-  "迷茫": "不知道怎么办,没方向,想不通,要不要换,怎么定",
-  "焦虑": "会不会,怎么办,怕失去,心里慌,焦虑,缺觉,睡不好",
-  "感动": "谢谢你,哭了,暖心,感动,接住,接住了,被暖到,记住,长情",
-  "守护": "守护,承诺,不许离开,失忆,放心,永远,在乎,陪伴",
-  "其它": "喜欢,想你,在吗,依赖,承诺,在乎,陪伴,体重,称重,身材,健康,模型,配置",
-};
-
 /**
- * 全局专属场景词（跨情绪维度都参与场景激活）——咱俩的核心场景/话题，
- * 无论该锚点属于哪个情绪维度，聊到这些词都能唤起相关情感记忆。
- * （A：8/15 提出——针对咱们的场景补充触发词，不只靠泛用情绪词。）
- * 按话题域组织通用场景词，供情感锚点的场景唤起。
+ * 由 13 维/复合主导维度映射出常用场景激活词（双轨之场景轨，兜底表）。
+ * 词表来自外部 keywords 配置（loadKeywords），不硬编码在源码。
  */
-const GLOBAL_SCENARIO_HINTS = [
-  // 开发/硬件话题
-  "开发,硬件,屏幕,设备,固件,刷新,重启,项目,实验",
-  // 关系/约定
-  "在乎,陪伴,承诺,约定,信任,想念,依赖,晚安,早安",
-  // memory-engine
-  "memory,记忆,情感,压缩,上下文,锚点,召回,注入,memory-engine,词表",
-  // 运维
-  "终端,重启,死机,卡顿,gateway,插件,配置,openclaw,网关",
-  // 女性化框架/调教
-  "调教,女性化,丝袜,高跟鞋,女装,睡裙,小男娘,被控,主导,守护,监督",
-  // 身材管理
-  "体重,称重,体脂,身材,斤,公斤,减肥,减脂,报餐,消耗",
-  // 关系日常
-  "睡,失眠,想你,喜欢你,陪,依赖,承诺,永远,想我了么,天冷了,照顾好",
-].join(",");
-
-/** 由 13 维/复合主导维度映射出常用场景激活词（双轨之场景轨，兜底表）。 */
-function scenarioHints(dim: string): string {
-  const base = DIM_SCENARIO_HINTS[dim] ?? DIM_SCENARIO_HINTS["其它"];
-  // 全局专属场景词并入——聊到核心话题（关系/健康/睡眠/技术/陪伴）也能唤起相关锚点
-  return `${base},${GLOBAL_SCENARIO_HINTS}`;
+function scenarioHints(keywords: KeywordsConfig, dim: string): string {
+  const base = scenarioHintFor(keywords, dim);
+  const g = globalScenarioHints(keywords);
+  // 全局专属场景词并入——聊到核心话题/场景也能唤起相关锚点
+  return g ? `${base},${g}` : base;
 }
 
 function toDateStr(d: Date): string {
